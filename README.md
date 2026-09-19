@@ -1,17 +1,36 @@
-# transcreve
+# Transcreve
 
-A new Flutter project.
+Ferramenta desktop para transcrição e estudo musical, desenvolvida em Python com PySide6.
 
-## Getting Started
+## Recursos
 
-This project is a starting point for a Flutter application.
+- Importação de arquivos de áudio locais
+- Download de áudio do YouTube com `yt-dlp`
+- Visualização da waveform e navegação precisa
+- Controle de velocidade com preservação de tom
+- Loop A–B e cue point
+- Marcadores de seções e anotações
+- Persistência local em SQLite
 
-A few resources to get you started if this is your first Flutter project:
+## Requisitos
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+- Python 3.11 ou superior
+- FFmpeg
+- Rubber Band Library
+- PortAudio e libsndfile
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Instalação
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Execução
+
+```bash
+python main.py
+```
+
+Os dados da biblioteca são armazenados localmente em `~/.local/share/transcreve/`.
