@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-import torch
 from PySide6.QtCore import QObject, QThread, Signal
 
 STEMS = ["vocals", "drums", "bass", "other"]
@@ -27,6 +26,8 @@ class _SepWorker(QObject):
                 stems = self._load_cache(cache)
                 self.finished.emit(stems)
                 return
+
+            import torch
 
             self.progress.emit("Carregando modelo Demucs...")
             from demucs.pretrained import get_model

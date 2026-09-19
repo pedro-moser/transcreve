@@ -1,0 +1,8 @@
+-r requirements.txt
+
+# Recursos avançados: detecção de acordes e separação de instrumentos.
+# Versões alinhadas com o ambiente validado do Transcreve.
+librosa==0.11.0
+torch==2.11.0
+torchaudio==2.11.0
+demucs==4.0.1
