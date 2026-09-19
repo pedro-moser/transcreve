@@ -10,6 +10,7 @@ Ferramenta desktop para transcrição e estudo musical, desenvolvida em Python c
 - Controle de velocidade com preservação de tom
 - Loop A–B e cue point
 - Marcadores de seções e anotações
+- Atalhos de teclado com guia dentro do player
 - Persistência local em SQLite
 - Detecção de acordes e separação de instrumentos na instalação completa
 

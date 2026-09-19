@@ -3,6 +3,8 @@ import uuid
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QDialog,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -29,6 +31,37 @@ import theme
 
 class PlayerScreen(QWidget):
     back_requested = Signal()
+
+    SHORTCUT_GROUPS = [
+        (
+            "Reprodução",
+            [
+                ("Space", "Espaço", "Play / pausa"),
+                ("Left", "←", "Voltar 5 segundos"),
+                ("Right", "→", "Avançar 5 segundos"),
+                ("Ctrl+Left", "Ctrl + ←", "Seção anterior"),
+                ("Ctrl+Right", "Ctrl + →", "Próxima seção"),
+            ],
+        ),
+        (
+            "Velocidade",
+            [
+                ("[", "[", "Diminuir 0,1×"),
+                ("]", "]", "Aumentar 0,1×"),
+            ],
+        ),
+        (
+            "Loop, marcações e análise",
+            [
+                ("A", "A", "Marcar início do loop"),
+                ("B", "B", "Marcar fim do loop"),
+                ("L", "L", "Ativar / desativar loop"),
+                ("C", "C", "Definir cue point"),
+                ("M", "M", "Adicionar seção"),
+                ("D", "D", "Detectar acorde na posição atual"),
+            ],
+        ),
+    ]
 
     def __init__(self, storage: StorageService, parent=None):
         super().__init__(parent)
@@ -77,6 +110,17 @@ class PlayerScreen(QWidget):
         self._artist_label = QLabel()
         self._artist_label.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 12px;")
         h_layout.addWidget(self._artist_label)
+
+        self._btn_shortcuts = QPushButton("⌨ Atalhos")
+        self._btn_shortcuts.setAccessibleName("Abrir ajuda de atalhos de teclado")
+        self._btn_shortcuts.setAccessibleDescription(
+            "Mostra todos os comandos de teclado disponíveis no player"
+        )
+        self._btn_shortcuts.setCursor(Qt.PointingHandCursor)
+        self._btn_shortcuts.setToolTip("Ver todos os atalhos de teclado")
+        self._btn_shortcuts.clicked.connect(self._show_shortcuts)
+        self._apply_shortcut_button_style()
+        h_layout.addWidget(self._btn_shortcuts)
 
         root.addWidget(header)
 
@@ -132,6 +176,22 @@ class PlayerScreen(QWidget):
         self._btn_fwd = self._icon_btn("⏩", theme.SUBTEXT0, lambda: self._audio.seek_relative(5000), 36)
         self._btn_next = self._icon_btn("⏭", theme.OVERLAY0, self._seek_next_section, 36)
 
+        self._btn_prev.setToolTip("Ctrl + ← · seção anterior")
+        self._btn_prev.setAccessibleName("Ir para a seção anterior")
+        self._btn_prev.setAccessibleDescription("Atalho Ctrl mais seta para a esquerda")
+        self._btn_rew.setToolTip("← · voltar 5 segundos")
+        self._btn_rew.setAccessibleName("Voltar 5 segundos")
+        self._btn_rew.setAccessibleDescription("Atalho seta para a esquerda")
+        self._btn_play.setToolTip("Espaço · play / pausa")
+        self._btn_play.setAccessibleName("Reproduzir ou pausar")
+        self._btn_play.setAccessibleDescription("Atalho barra de espaço")
+        self._btn_fwd.setToolTip("→ · avançar 5 segundos")
+        self._btn_fwd.setAccessibleName("Avançar 5 segundos")
+        self._btn_fwd.setAccessibleDescription("Atalho seta para a direita")
+        self._btn_next.setToolTip("Ctrl + → · próxima seção")
+        self._btn_next.setAccessibleName("Ir para a próxima seção")
+        self._btn_next.setAccessibleDescription("Atalho Ctrl mais seta para a direita")
+
         for btn in (self._btn_prev, self._btn_rew, self._btn_play, self._btn_fwd, self._btn_next):
             c_layout.addWidget(btn)
 
@@ -155,6 +215,11 @@ class PlayerScreen(QWidget):
         self._speed_slider.setRange(25, 200)
         self._speed_slider.setSingleStep(5)
         self._speed_slider.setValue(100)
+        self._speed_slider.setAccessibleName("Velocidade de reprodução")
+        self._speed_slider.setAccessibleDescription(
+            "Use colchete esquerdo para diminuir e colchete direito para aumentar"
+        )
+        self._speed_slider.setToolTip("[ diminui · ] aumenta a velocidade")
         self._speed_slider.valueChanged.connect(self._on_speed_slider)
         sp_layout.addWidget(self._speed_slider, stretch=1)
 
@@ -164,6 +229,7 @@ class PlayerScreen(QWidget):
         sp_layout.addWidget(self._speed_label)
 
         btn_reset_speed = QPushButton("1x")
+        btn_reset_speed.setAccessibleName("Redefinir velocidade para uma vez")
         btn_reset_speed.setFixedSize(32, 24)
         btn_reset_speed.setStyleSheet(f"color: {theme.OVERLAY0}; background: transparent; border: 1px solid {theme.SURFACE1}; border-radius: 4px; font-size: 11px;")
         btn_reset_speed.setCursor(Qt.PointingHandCursor)
@@ -181,24 +247,34 @@ class PlayerScreen(QWidget):
         lp_layout.setSpacing(16)
 
         self._btn_loop_a = QPushButton("A")
+        self._btn_loop_a.setAccessibleName("Marcar início do loop")
+        self._btn_loop_a.setAccessibleDescription("Atalho A")
         self._btn_loop_a.setFixedSize(48, 32)
         self._btn_loop_a.setCursor(Qt.PointingHandCursor)
+        self._btn_loop_a.setToolTip("A · marcar início do loop")
         self._btn_loop_a.clicked.connect(self._set_loop_start)
         lp_layout.addWidget(self._btn_loop_a)
 
         self._btn_loop_toggle = QPushButton("Loop (L)")
+        self._btn_loop_toggle.setAccessibleName("Ativar ou desativar loop")
+        self._btn_loop_toggle.setAccessibleDescription("Atalho L")
         self._btn_loop_toggle.setFixedHeight(32)
         self._btn_loop_toggle.setCursor(Qt.PointingHandCursor)
+        self._btn_loop_toggle.setToolTip("L · ativar ou desativar o loop")
         self._btn_loop_toggle.clicked.connect(self._toggle_loop)
         lp_layout.addWidget(self._btn_loop_toggle)
 
         self._btn_loop_b = QPushButton("B")
+        self._btn_loop_b.setAccessibleName("Marcar fim do loop")
+        self._btn_loop_b.setAccessibleDescription("Atalho B")
         self._btn_loop_b.setFixedSize(48, 32)
         self._btn_loop_b.setCursor(Qt.PointingHandCursor)
+        self._btn_loop_b.setToolTip("B · marcar fim do loop")
         self._btn_loop_b.clicked.connect(self._set_loop_end)
         lp_layout.addWidget(self._btn_loop_b)
 
         btn_clear_loop = QPushButton("✕")
+        btn_clear_loop.setAccessibleName("Limpar marcações do loop")
         btn_clear_loop.setFixedSize(28, 28)
         btn_clear_loop.setCursor(Qt.PointingHandCursor)
         btn_clear_loop.setStyleSheet(f"color: {theme.SURFACE1}; background: transparent; border: none;")
@@ -265,8 +341,11 @@ class PlayerScreen(QWidget):
         sec_header.addStretch()
 
         btn_add_sec = QPushButton("+")
+        btn_add_sec.setAccessibleName("Adicionar seção na posição atual")
+        btn_add_sec.setAccessibleDescription("Atalho M")
         btn_add_sec.setFixedSize(24, 24)
         btn_add_sec.setCursor(Qt.PointingHandCursor)
+        btn_add_sec.setToolTip("M · adicionar seção na posição atual")
         btn_add_sec.setStyleSheet(f"color: {theme.GREEN}; background: transparent; border: 1px solid {theme.GREEN}; border-radius: 4px; font-size: 14px; font-weight: bold;")
         btn_add_sec.clicked.connect(self._add_section)
         sec_header.addWidget(btn_add_sec)
@@ -318,17 +397,7 @@ class PlayerScreen(QWidget):
         n_layout.addLayout(n_header)
 
         self._notes_edit = QTextEdit()
-        self._notes_edit.setPlaceholderText(
-            "Atalhos:\n"
-            "Espaço — Play/Pause\n"
-            "← / → — Seek ±5s\n"
-            "Ctrl+← / Ctrl+→ — Seção anterior/próxima\n"
-            "[ / ] — Velocidade -/+ 0.1\n"
-            "A / B — Marcar início/fim do loop\n"
-            "L — Ativar/desativar loop\n"
-            "M — Adicionar seção\n"
-            "C — Definir cue point"
-        )
+        self._notes_edit.setPlaceholderText("Anotações gerais sobre a música...")
         self._notes_edit.setStyleSheet("font-size: 13px; line-height: 1.5;")
         self._notes_edit.textChanged.connect(self._on_notes_changed)
         n_layout.addWidget(self._notes_edit, stretch=1)
@@ -350,10 +419,127 @@ class PlayerScreen(QWidget):
         btn.clicked.connect(callback)
         return btn
 
+    def _apply_shortcut_button_style(self):
+        self._btn_shortcuts.setStyleSheet(
+            f"""
+            QPushButton {{
+                color: {theme.SUBTEXT0};
+                background-color: {theme.SURFACE0};
+                border: 1px solid {theme.SURFACE1};
+                border-radius: 6px;
+                padding: 5px 10px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                color: {theme.TEXT};
+                border-color: {theme.BLUE};
+            }}
+            QPushButton:focus {{
+                color: {theme.TEXT};
+                border: 2px solid {theme.YELLOW};
+            }}
+            """
+        )
+
+    def _create_shortcuts_dialog(self) -> QDialog:
+        dialog = QDialog(self)
+        dialog.setObjectName("shortcutDialog")
+        dialog.setWindowTitle("Atalhos de teclado")
+        dialog.setModal(True)
+        dialog.resize(720, 470)
+        dialog.setMaximumHeight(500)
+        dialog.setStyleSheet(f"background-color: {theme.BASE}; color: {theme.TEXT};")
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(8)
+
+        title = QLabel("Atalhos de teclado")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Use estes comandos enquanto o player estiver aberto.")
+        subtitle.setStyleSheet(f"color: {theme.SUBTEXT0}; font-size: 12px;")
+        layout.addWidget(subtitle)
+
+        columns = QHBoxLayout()
+        columns.setSpacing(28)
+        left_column = QVBoxLayout()
+        right_column = QVBoxLayout()
+        left_column.setSpacing(5)
+        right_column.setSpacing(5)
+        columns.addLayout(left_column, stretch=1)
+        columns.addLayout(right_column, stretch=1)
+
+        for group_index, (group_name, shortcuts) in enumerate(self.SHORTCUT_GROUPS):
+            column = left_column if group_index < 2 else right_column
+            group_label = QLabel(group_name)
+            group_label.setStyleSheet(
+                f"color: {theme.BLUE}; font-size: 13px; font-weight: bold; padding-top: 6px;"
+            )
+            column.addWidget(group_label)
+
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(5)
+            for row, (_, display_key, description) in enumerate(shortcuts):
+                key_label = QLabel(display_key)
+                key_label.setAlignment(Qt.AlignCenter)
+                key_label.setFixedSize(104, 28)
+                key_label.setStyleSheet(
+                    f"""
+                    background-color: {theme.SURFACE0};
+                    color: {theme.TEXT};
+                    border: 1px solid {theme.SURFACE1};
+                    border-radius: 5px;
+                    font-family: monospace;
+                    font-size: 12px;
+                    font-weight: bold;
+                    """
+                )
+                description_label = QLabel(description)
+                description_label.setStyleSheet(
+                    f"color: {theme.SUBTEXT0}; font-size: 12px;"
+                )
+                grid.addWidget(key_label, row, 0)
+                grid.addWidget(description_label, row, 1)
+            grid.setColumnStretch(1, 1)
+            column.addLayout(grid)
+
+        left_column.addStretch()
+        right_column.addStretch()
+        layout.addLayout(columns, stretch=1)
+
+        close_button = QPushButton("Fechar")
+        close_button.setAccessibleName("Fechar ajuda de atalhos")
+        close_button.setCursor(Qt.PointingHandCursor)
+        close_button.clicked.connect(dialog.accept)
+        close_button.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {theme.BLUE};
+                color: {theme.BASE};
+                border: 2px solid transparent;
+                border-radius: 6px;
+                padding: 7px 18px;
+                font-weight: bold;
+            }}
+            QPushButton:focus {{
+                border-color: {theme.YELLOW};
+            }}
+            """
+        )
+        layout.addWidget(close_button, alignment=Qt.AlignRight)
+        return dialog
+
+    def _show_shortcuts(self):
+        dialog = self._create_shortcuts_dialog()
+        dialog.exec()
+
     # ── Shortcuts ───────────────────────────────────────
 
     def _setup_shortcuts(self):
-        shortcuts = {
+        actions = {
             "Space": self._audio.toggle_play,
             "Left": lambda: self._audio.seek_relative(-5000),
             "Right": lambda: self._audio.seek_relative(5000),
@@ -368,10 +554,11 @@ class PlayerScreen(QWidget):
             "C": self._set_cue_point,
             "D": self._detect_chord,
         }
-        for key, fn in shortcuts.items():
-            s = QShortcut(QKeySequence(key), self)
-            s.setContext(Qt.WidgetWithChildrenShortcut)
-            s.activated.connect(fn)
+        for _, shortcuts in self.SHORTCUT_GROUPS:
+            for sequence, _, _ in shortcuts:
+                shortcut = QShortcut(QKeySequence(sequence), self)
+                shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(actions[sequence])
 
     # ── Connect audio signals ───────────────────────────
 
@@ -786,6 +973,7 @@ class PlayerScreen(QWidget):
         self._speed_label.setStyleSheet(f"color: {theme.BLUE}; font-family: monospace; font-size: 13px;")
         self._artist_label.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 12px;")
         self._sep_status.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 11px;")
+        self._apply_shortcut_button_style()
         self._empty_sec_label.setStyleSheet(f"color: {theme.SURFACE1}; font-size: 12px; padding: 20px;")
         self._sec_notes_label.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 11px; padding-top: 4px;")
         self._btn_play.setStyleSheet(
