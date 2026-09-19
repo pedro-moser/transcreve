@@ -1,0 +1,7 @@
+PySide6>=6.6
+numpy
+soundfile
+sounddevice
+pyrubberband
+pyqtgraph
+yt-dlp
