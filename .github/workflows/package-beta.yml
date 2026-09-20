@@ -130,13 +130,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $env:QT_QPA_PLATFORM = "offscreen"
-          & "dist\Transcreve\Transcreve.exe" --smoke-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "Packaged application smoke test failed with $LASTEXITCODE"
+          $app = (Resolve-Path "dist\Transcreve\Transcreve.exe").Path
+          $smoke = Start-Process -FilePath $app -ArgumentList "--smoke-test" -PassThru -Wait
+          if ($smoke.ExitCode -ne 0) {
+            throw "Packaged application smoke test failed with $($smoke.ExitCode)"
           }
-          & "dist\Transcreve\Transcreve.exe" --demucs-smoke-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "Packaged Demucs smoke test failed with $LASTEXITCODE"
+          $demucsSmoke = Start-Process -FilePath $app -ArgumentList "--demucs-smoke-test" -PassThru -Wait
+          if ($demucsSmoke.ExitCode -ne 0) {
+            throw "Packaged Demucs smoke test failed with $($demucsSmoke.ExitCode)"
           }
 
       - name: Ad-hoc sign and smoke-test macOS application
@@ -184,8 +185,8 @@ jobs:
           $process = Start-Process -FilePath $installer.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=$target" -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "Installer failed with $($process.ExitCode)" }
           $env:QT_QPA_PLATFORM = "offscreen"
-          & "$target\Transcreve.exe" --smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "Installed app smoke test failed" }
+          $installedSmoke = Start-Process -FilePath "$target\Transcreve.exe" -ArgumentList "--smoke-test" -PassThru -Wait
+          if ($installedSmoke.ExitCode -ne 0) { throw "Installed app smoke test failed with $($installedSmoke.ExitCode)" }
 
       - name: Build and verify macOS DMG
         if: runner.os == 'macOS'
