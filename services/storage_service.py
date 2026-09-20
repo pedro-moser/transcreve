@@ -5,6 +5,7 @@ from pathlib import Path
 
 from models.section import Section
 from models.song import Song
+from app_paths import database_path
 
 
 class StorageService:
@@ -13,9 +14,7 @@ class StorageService:
 
     def __init__(self, db_path: Path | None = None):
         if db_path is None:
-            data_dir = Path.home() / ".local" / "share" / "transcreve"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            db_path = data_dir / "transcreve.db"
+            db_path = database_path()
         self._db_path = db_path
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row

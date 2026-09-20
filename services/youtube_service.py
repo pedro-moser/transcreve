@@ -3,6 +3,9 @@ from pathlib import Path
 import yt_dlp
 from PySide6.QtCore import QObject, QThread, Signal
 
+from app_paths import music_dir
+from runtime_tools import ffmpeg_executable
+
 
 class _DownloadWorker(QObject):
     progress = Signal(str)
@@ -42,6 +45,10 @@ class _DownloadWorker(QObject):
                 "quiet": True,
                 "no_warnings": True,
             }
+
+            self.progress.emit("Preparando conversor de áudio...")
+            if ffmpeg := ffmpeg_executable():
+                ydl_opts["ffmpeg_location"] = str(ffmpeg)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.progress.emit("Obtendo informações...")
@@ -89,7 +96,7 @@ class YoutubeService(QObject):
             self.error.emit("Download já em andamento")
             return
 
-        output_dir = Path.home() / ".local" / "share" / "transcreve" / "music"
+        output_dir = music_dir()
 
         self._thread = QThread()
         self._worker = _DownloadWorker(url, output_dir)

@@ -1,7 +1,8 @@
 import json
-from pathlib import Path
 
-_SETTINGS_PATH = Path.home() / ".local" / "share" / "transcreve" / "settings.json"
+from app_paths import settings_path
+
+_SETTINGS_PATH = settings_path()
 
 # ── Theme palettes ──────────────────────────────────────
 

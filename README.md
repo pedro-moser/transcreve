@@ -243,7 +243,7 @@ Depois, abra o programa normalmente.
 
 ## Atualizar o Transcreve
 
-As músicas, marcações e anotações ficam fora da pasta do programa, em `.local/share/transcreve` dentro da pasta pessoal do usuário. Por isso, atualizar o código não apaga a biblioteca.
+As músicas, marcações e anotações ficam na pasta de dados do sistema descrita no final deste documento. Por isso, atualizar o código ou o aplicativo não apaga a biblioteca.
 
 Para atualizar:
 
@@ -309,10 +309,14 @@ sudo apt install libxcb-cursor0
 
 ## Onde ficam os dados
 
-O Transcreve guarda banco de dados, músicas baixadas e cache em uma pasta oculta dentro da pasta pessoal do usuário:
+O Transcreve guarda banco de dados, músicas baixadas e cache na pasta de dados do usuário:
 
-- **Windows:** `C:\Users\SEU_NOME\.local\share\transcreve\`
-- **macOS:** `/Users/SEU_NOME/.local/share/transcreve/`
-- **Linux:** `/home/SEU_NOME/.local/share/transcreve/`, também representada por `~/.local/share/transcreve/`
+- **Windows:** `%LOCALAPPDATA%\transcreve\`
+- **macOS:** `~/Library/Application Support/transcreve/`
+- **Linux:** `~/.local/share/transcreve/`
 
 Esses dados não são enviados ao GitHub. Faça backup dessa pasta para preservar toda a biblioteca.
+
+## Licença
+
+O Transcreve é software livre distribuído sob a licença [GNU GPL v3.0 ou posterior](LICENSE). Os instaladores incluem componentes de terceiros sob suas próprias licenças; consulte [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

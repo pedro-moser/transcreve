@@ -5,8 +5,10 @@ import shutil
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
+from app_paths import stems_dir
+
 STEMS = ["vocals", "drums", "bass", "other"]
-CACHE_DIR = Path.home() / ".local" / "share" / "transcreve" / "stems"
+CACHE_DIR = stems_dir()
 
 
 class InvalidStemCacheError(ValueError):
