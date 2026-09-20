@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# Last PyTorch/TorchAudio line that still publishes Python 3.12
+# macOS Intel wheels. Demucs 4 remains compatible with this pair.
+librosa==0.11.0
+torch==2.2.2
+torchaudio==2.2.2
+dora-search==0.1.12
+demucs==4.0.1

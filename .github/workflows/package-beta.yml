@@ -1,0 +1,310 @@
+name: Package beta installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without leading v
+        required: true
+        default: 2.1.0-beta.1
+        type: string
+      publish_release:
+        description: Publish a GitHub prerelease after all builds pass
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*-beta.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12.10"
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset_id }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset_id: windows-x64
+            os: windows-2022
+            python_arch: x64
+            expected_machine: AMD64
+            requirements_file: requirements-full.txt
+          - asset_id: macos-intel
+            os: macos-15-intel
+            python_arch: x64
+            expected_machine: x86_64
+            requirements_file: requirements-full-macos-intel.txt
+          - asset_id: macos-arm64
+            os: macos-15
+            python_arch: arm64
+            expected_machine: arm64
+            requirements_file: requirements-full.txt
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$INPUT_VERSION"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch }}
+
+      - name: Verify Python architecture
+        shell: bash
+        env:
+          EXPECTED_MACHINE: ${{ matrix.expected_machine }}
+        run: |
+          python -c "import os, platform, struct; machine=platform.machine(); print(platform.platform()); print(machine); assert struct.calcsize('P') == 8; assert machine.lower() == os.environ['EXPECTED_MACHINE'].lower(), (machine, os.environ['EXPECTED_MACHINE'])"
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install --no-cache-dir -r "${{ matrix.requirements_file }}" -r requirements-build.txt
+          python -m pip check
+
+      - name: Fetch Rubber Band for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/fetch-rubberband.ps1
+
+      - name: Fetch Rubber Band for macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./packaging/fetch-rubberband-macos.sh
+
+      - name: Create macOS icon
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./packaging/macos/create-icns.sh
+
+      - name: Run source tests
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m unittest discover -s tests -v
+          python main.py --smoke-test
+
+      - name: Build PyInstaller application
+        shell: bash
+        env:
+          TRANSCREVE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m PyInstaller --noconfirm --clean packaging/transcreve.spec
+
+      - name: Smoke-test packaged Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          & "dist\Transcreve\Transcreve.exe" --smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged application smoke test failed with $LASTEXITCODE"
+          }
+          & "dist\Transcreve\Transcreve.exe" --demucs-smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged Demucs smoke test failed with $LASTEXITCODE"
+          }
+
+      - name: Ad-hoc sign and smoke-test macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_machine }}
+        run: |
+          set -euo pipefail
+          app="dist/Transcreve.app"
+          while IFS= read -r -d '' candidate; do
+            if file "$candidate" | grep -q "Mach-O"; then
+              lipo -archs "$candidate" | tr ' ' '\n' | grep -qx "$EXPECTED_ARCH" || {
+                echo "Missing $EXPECTED_ARCH slice: $candidate" >&2
+                exit 1
+              }
+            fi
+          done < <(find "$app/Contents" -type f -print0)
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          QT_QPA_PLATFORM=offscreen "$app/Contents/MacOS/Transcreve" --smoke-test
+          QT_QPA_PLATFORM=offscreen "$app/Contents/MacOS/Transcreve" --demucs-smoke-test
+          file "$app/Contents/MacOS/Transcreve"
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build and smoke-test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force release | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC not found: $iscc" }
+          $sourceDir = (Resolve-Path "dist\Transcreve").Path
+          $outputDir = (Resolve-Path "release").Path
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" "/DMySourceDir=$sourceDir" "/DMyOutputDir=$outputDir" "packaging\windows\transcreve.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+          $installer = Get-Item "release\Transcreve-${{ steps.version.outputs.version }}-windows-x64-setup.exe"
+          $target = Join-Path $env:RUNNER_TEMP "transcreve-installed"
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=$target" -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer failed with $($process.ExitCode)" }
+          $env:QT_QPA_PLATFORM = "offscreen"
+          & "$target\Transcreve.exe" --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed app smoke test failed" }
+
+      - name: Build and verify macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          if [[ "${{ matrix.asset_id }}" == "macos-intel" ]]; then
+            suffix="macos-intel"
+            expected_arch="x86_64"
+          else
+            suffix="macos-arm64"
+            expected_arch="arm64"
+          fi
+          mkdir -p release
+          output="release/Transcreve-${version}-${suffix}.dmg"
+          ./packaging/macos/create-dmg.sh "dist/Transcreve.app" "$output"
+
+          mount="$RUNNER_TEMP/transcreve-dmg"
+          mkdir -p "$mount"
+          hdiutil attach "$output" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          app="$mount/Transcreve.app"
+          test -x "$app/Contents/MacOS/Transcreve"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          file "$app/Contents/MacOS/Transcreve" | grep -q "$expected_arch"
+          QT_QPA_PLATFORM=offscreen "$app/Contents/MacOS/Transcreve" --smoke-test
+          hdiutil detach "$mount"
+          trap - EXIT
+          hdiutil verify "$output"
+
+      - name: Show disk usage
+        if: always()
+        shell: bash
+        run: |
+          python -c "from pathlib import Path; print([(str(p), p.stat().st_size) for p in Path('release').glob('*')])" || true
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_id }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Publish beta release
+    needs: build
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$INPUT_VERSION"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Verify assets and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          version="${tag#v}"
+          expected=(
+            "Transcreve-${version}-windows-x64-setup.exe"
+            "Transcreve-${version}-macos-intel.dmg"
+            "Transcreve-${version}-macos-arm64.dmg"
+          )
+          for asset in "${expected[@]}"; do
+            test -s "release/$asset"
+          done
+          (
+            cd release
+            sha256sum "${expected[@]}" > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          )
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" \
+              release/Transcreve-* \
+              release/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            gh release edit "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Transcreve $tag" \
+              --prerelease \
+              --latest=false
+          else
+            gh release create "$tag" \
+              release/Transcreve-* \
+              release/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Transcreve $tag" \
+              --generate-notes \
+              --prerelease \
+              --latest=false
+          fi
