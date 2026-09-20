@@ -446,7 +446,8 @@ class PlayerScreen(QWidget):
         dialog.setObjectName("shortcutDialog")
         dialog.setWindowTitle("Atalhos de teclado")
         dialog.setModal(True)
-        dialog.resize(720, 470)
+        dialog.setFixedWidth(780)
+        dialog.resize(780, 470)
         dialog.setMaximumHeight(500)
         dialog.setStyleSheet(f"background-color: {theme.BASE}; color: {theme.TEXT};")
 
@@ -498,6 +499,7 @@ class PlayerScreen(QWidget):
                     """
                 )
                 description_label = QLabel(description)
+                description_label.setWordWrap(True)
                 description_label.setStyleSheet(
                     f"color: {theme.SUBTEXT0}; font-size: 12px;"
                 )

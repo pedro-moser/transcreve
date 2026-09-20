@@ -55,7 +55,7 @@ class YoutubeRuntimeTests(unittest.TestCase):
                     worker.run()
 
         self.assertEqual(errors, [])
-        self.assertEqual(captured["ffmpeg_location"], "/bundle/bin/ffmpeg")
+        self.assertEqual(captured["ffmpeg_location"], str(Path("/bundle/bin/ffmpeg")))
         self.assertEqual(results[0][1:], ("Track", "Artist"))
 
 
