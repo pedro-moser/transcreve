@@ -20,8 +20,10 @@ class RuntimeToolsTests(unittest.TestCase):
             executable.parent.mkdir()
             executable.write_bytes(b"binary")
 
-            with patch.object(runtime_tools, "bundle_root", return_value=bundle):
-                self.assertEqual(runtime_tools.rubberband_executable(), executable)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("TRANSCREVE_RUBBERBAND_PATH", None)
+                with patch.object(runtime_tools, "bundle_root", return_value=bundle):
+                    self.assertEqual(runtime_tools.rubberband_executable(), executable)
 
     def test_configured_rubberband_path_is_preferred(self):
         with TemporaryDirectory() as tmp:
@@ -34,12 +36,14 @@ class RuntimeToolsTests(unittest.TestCase):
                 self.assertEqual(runtime_tools.rubberband_executable(), executable)
 
     def test_system_rubberband_is_fallback(self):
-        with patch.object(runtime_tools, "bundle_root", return_value=Path("/missing")):
-            with patch.object(runtime_tools.shutil, "which", return_value="/usr/bin/rubberband"):
-                self.assertEqual(
-                    runtime_tools.rubberband_executable(),
-                    Path("/usr/bin/rubberband"),
-                )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TRANSCREVE_RUBBERBAND_PATH", None)
+            with patch.object(runtime_tools, "bundle_root", return_value=Path("/missing")):
+                with patch.object(runtime_tools.shutil, "which", return_value="/usr/bin/rubberband"):
+                    self.assertEqual(
+                        runtime_tools.rubberband_executable(),
+                        Path("/usr/bin/rubberband"),
+                    )
 
     def test_configure_rubberband_updates_pyrubberband_command(self):
         fake = Path("/bundle/bin/rubberband")
