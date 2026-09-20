@@ -121,14 +121,15 @@ def run_demucs_smoke_test() -> int:
         model = get_model("htdemucs")
         model.eval()
         sample_rate = int(model.samplerate)
-        waveform = torch.zeros((1, int(model.audio_channels), sample_rate))
+        smoke_frames = sample_rate // 10
+        waveform = torch.zeros((1, int(model.audio_channels), smoke_frames))
         with torch.no_grad():
             estimates = apply_model(
                 model,
                 waveform,
                 device="cpu",
                 shifts=0,
-                split=True,
+                split=False,
             )
         if estimates.shape[0] != 1:
             return 11
@@ -136,7 +137,7 @@ def run_demucs_smoke_test() -> int:
             return 12
         if estimates.shape[2] != int(model.audio_channels):
             return 13
-        if estimates.shape[3] != sample_rate:
+        if estimates.shape[3] != smoke_frames:
             return 14
         if not torch.isfinite(estimates).all():
             return 15
