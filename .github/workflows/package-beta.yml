@@ -38,18 +38,21 @@ jobs:
             os: windows-2022
             python_arch: x64
             expected_machine: AMD64
+            demucs_smoke_model: htdemucs
             rubberband_path: packaging/vendor/bin/rubberband.exe
             requirements_file: requirements-full.txt
           - asset_id: macos-intel
             os: macos-15-intel
             python_arch: x64
             expected_machine: x86_64
+            demucs_smoke_model: demucs_unittest
             rubberband_path: packaging/vendor/bin/rubberband
             requirements_file: requirements-full-macos-intel.txt
           - asset_id: macos-arm64
             os: macos-15
             python_arch: arm64
             expected_machine: arm64
+            demucs_smoke_model: htdemucs
             rubberband_path: packaging/vendor/bin/rubberband
             requirements_file: requirements-full.txt
 
@@ -127,6 +130,8 @@ jobs:
       - name: Smoke-test packaged Windows application
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          TRANSCREVE_DEMUCS_SMOKE_MODEL: ${{ matrix.demucs_smoke_model }}
         run: |
           $ErrorActionPreference = "Stop"
           $env:QT_QPA_PLATFORM = "offscreen"
@@ -149,6 +154,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_ARCH: ${{ matrix.expected_machine }}
+          TRANSCREVE_DEMUCS_SMOKE_MODEL: ${{ matrix.demucs_smoke_model }}
         run: |
           set -euo pipefail
           app="dist/Transcreve.app"
