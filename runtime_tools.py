@@ -40,6 +40,10 @@ def resource_path(relative: str) -> Path:
 
 
 def rubberband_executable() -> Path | None:
+    configured = os.environ.get("TRANSCREVE_RUBBERBAND_PATH")
+    if configured and Path(configured).is_file():
+        return Path(configured)
+
     executable_name = "rubberband.exe" if os.name == "nt" else "rubberband"
     bundled = bundle_root() / "bin" / executable_name
     if bundled.is_file():

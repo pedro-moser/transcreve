@@ -38,16 +38,19 @@ jobs:
             os: windows-2022
             python_arch: x64
             expected_machine: AMD64
+            rubberband_path: packaging/vendor/bin/rubberband.exe
             requirements_file: requirements-full.txt
           - asset_id: macos-intel
             os: macos-15-intel
             python_arch: x64
             expected_machine: x86_64
+            rubberband_path: packaging/vendor/bin/rubberband
             requirements_file: requirements-full-macos-intel.txt
           - asset_id: macos-arm64
             os: macos-15
             python_arch: arm64
             expected_machine: arm64
+            rubberband_path: packaging/vendor/bin/rubberband
             requirements_file: requirements-full.txt
 
     runs-on: ${{ matrix.os }}
@@ -109,6 +112,7 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
+          TRANSCREVE_RUBBERBAND_PATH: ${{ github.workspace }}/${{ matrix.rubberband_path }}
         run: |
           python -m unittest discover -s tests -v
           python main.py --smoke-test
