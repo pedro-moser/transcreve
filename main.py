@@ -8,7 +8,11 @@ from tempfile import TemporaryDirectory
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
-from runtime_tools import configure_runtime_tools, resource_path
+from runtime_tools import (
+    configure_runtime_tools,
+    configure_standard_streams,
+    resource_path,
+)
 from screens.library_screen import LibraryScreen
 from screens.player_screen import PlayerScreen
 from services.storage_service import StorageService
@@ -151,6 +155,7 @@ def run_demucs_smoke_test() -> int:
 
 
 def main():
+    configure_standard_streams()
     tools = configure_runtime_tools(prepare_ffmpeg="--smoke-test" in sys.argv)
     app = QApplication(sys.argv)
     app.setApplicationName("Transcreve")

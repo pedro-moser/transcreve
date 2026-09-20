@@ -28,6 +28,13 @@ FFMPEG_RELEASES = {
 }
 
 
+def configure_standard_streams() -> None:
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
 def bundle_root() -> Path:
     bundled = getattr(sys, "_MEIPASS", None)
     if bundled:

@@ -25,6 +25,20 @@ class RuntimeToolsTests(unittest.TestCase):
                 with patch.object(runtime_tools, "bundle_root", return_value=bundle):
                     self.assertEqual(runtime_tools.rubberband_executable(), executable)
 
+    def test_missing_standard_streams_are_replaced(self):
+        with patch.object(runtime_tools.sys, "stdout", None), patch.object(
+            runtime_tools.sys, "stderr", None
+        ):
+            runtime_tools.configure_standard_streams()
+            stdout = runtime_tools.sys.stdout
+            stderr = runtime_tools.sys.stderr
+            self.assertIsNotNone(stdout)
+            self.assertIsNotNone(stderr)
+            stdout.write("probe")
+            stderr.write("probe")
+            stdout.close()
+            stderr.close()
+
     def test_configured_rubberband_path_is_preferred(self):
         with TemporaryDirectory() as tmp:
             executable = Path(tmp) / "rubberband"
