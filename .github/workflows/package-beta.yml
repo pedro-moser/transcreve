@@ -135,8 +135,12 @@ jobs:
           if ($smoke.ExitCode -ne 0) {
             throw "Packaged application smoke test failed with $($smoke.ExitCode)"
           }
+          $env:TRANSCREVE_SMOKE_LOG = "$PWD\demucs-smoke.log"
           $demucsSmoke = Start-Process -FilePath $app -ArgumentList "--demucs-smoke-test" -PassThru -Wait
           if ($demucsSmoke.ExitCode -ne 0) {
+            if (Test-Path $env:TRANSCREVE_SMOKE_LOG) {
+              Get-Content $env:TRANSCREVE_SMOKE_LOG
+            }
             throw "Packaged Demucs smoke test failed with $($demucsSmoke.ExitCode)"
           }
 

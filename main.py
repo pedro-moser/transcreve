@@ -1,5 +1,7 @@
+import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -142,6 +144,8 @@ def run_demucs_smoke_test() -> int:
         if not torch.isfinite(estimates).all():
             return 15
     except Exception:
+        if log_path := os.environ.get("TRANSCREVE_SMOKE_LOG"):
+            Path(log_path).write_text(traceback.format_exc(), encoding="utf-8")
         return 16
     return 0
 
