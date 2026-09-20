@@ -126,6 +126,9 @@ def run_demucs_smoke_test() -> int:
 
         model = get_model("htdemucs")
         model.eval()
+        for inner_model in getattr(model, "models", [model]):
+            if hasattr(inner_model, "use_train_segment"):
+                inner_model.use_train_segment = False
         sample_rate = int(model.samplerate)
         smoke_frames = sample_rate // 10
         waveform = torch.zeros((1, int(model.audio_channels), smoke_frames))
