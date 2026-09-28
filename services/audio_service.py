@@ -139,8 +139,14 @@ class AudioService(QObject):
         self.stop()
         self._cancel_rb()
         self._cancel_load()
-        self._data = None
-        self._rb_buf = None
+        with self._lock:
+            self._data = None
+            self._rb_buf = None
+            # Stems belong to the previous song; without this, _playback_data
+            # would keep returning its mix.
+            self._stems = None
+            self._stem_muted = {}
+            self._mix_cache = None
         self.loading_changed.emit(True)
 
         self._load_thread = QThread()
