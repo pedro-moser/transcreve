@@ -1,8 +1,4 @@
-import json
-
-from app_paths import settings_path
-
-_SETTINGS_PATH = settings_path()
+from app_settings import load_setting as _load_setting, save_setting as _save_setting
 
 # ── Theme palettes ──────────────────────────────────────
 
@@ -318,29 +314,6 @@ QSplitter::handle {{
     width: 2px;
 }}
 """
-
-
-# ── Settings persistence ────────────────────────────────
-
-def _load_setting(key: str, default=None):
-    try:
-        data = json.loads(_SETTINGS_PATH.read_text())
-        return data.get(key, default)
-    except Exception:
-        return default
-
-
-def _save_setting(key: str, value):
-    try:
-        _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            data = json.loads(_SETTINGS_PATH.read_text())
-        except Exception:
-            data = {}
-        data[key] = value
-        _SETTINGS_PATH.write_text(json.dumps(data))
-    except Exception:
-        pass
 
 
 def load_saved_theme():
