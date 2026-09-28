@@ -7,7 +7,12 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from app_paths import stems_dir
 
-MODEL_NAME = "htdemucs_6s"
+DEFAULT_MODEL = "htdemucs_6s"
+HQ_MODEL = "bs_roformer_sw"
+# Higher rank separates better. A cached result is reused whenever it is at
+# least as good as the requested model, so choosing "Padrão" never discards a
+# high-quality separation.
+MODEL_RANK = {"htdemucs": 0, DEFAULT_MODEL: 1, HQ_MODEL: 2}
 STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 # Caches written by the 4-stem htdemucs model are still loadable; the UI offers
 # to re-separate them so guitar and piano get their own stems.
@@ -22,14 +27,19 @@ class InvalidStemCacheError(ValueError):
 
 class _SepWorker(QObject):
     progress = Signal(str)
-    finished = Signal(dict)  # {name: ndarray} or empty on error
+    finished = Signal(dict, str)  # {name: ndarray}, model that produced them
     error = Signal(str)
 
-    def __init__(self, file_path: str, song_id: str, force: bool = False):
+    def __init__(
+        self,
+        file_path: str,
+        song_id: str,
+        model: str = DEFAULT_MODEL,
+    ):
         super().__init__()
         self._file_path = file_path
         self._song_id = song_id
-        self._force = force
+        self._model = model
 
     def run(self):
         try:
@@ -44,8 +54,8 @@ class _SepWorker(QObject):
 
             cache = CACHE_DIR / self._song_id
             self._recover_cache_transaction(cache)
-            cached_names = None if self._force else cached_stem_names(cache)
-            if cached_names is not None:
+            cached = cached_model(cache)
+            if cached is not None and MODEL_RANK[cached] >= MODEL_RANK[self._model]:
                 self.progress.emit("Carregando stems do cache...")
                 try:
                     stems = self._load_cache(
@@ -55,23 +65,17 @@ class _SepWorker(QObject):
                         source_channels,
                         source_size=source_stat.st_size,
                         source_mtime_ns=source_stat.st_mtime_ns,
-                        names=cached_names,
+                        names=cached_stem_names(cache),
+                        model=cached,
                     )
                 except InvalidStemCacheError:
                     self.progress.emit("Cache inconsistente; separando novamente...")
                     shutil.rmtree(cache)
                 else:
-                    self.finished.emit(stems)
+                    self.finished.emit(stems, cached)
                     return
 
             import torch
-
-            self.progress.emit("Carregando modelo Demucs...")
-            from demucs.pretrained import get_model
-            from demucs.apply import apply_model
-
-            model = get_model(MODEL_NAME)
-            model.eval()
 
             self.progress.emit("Lendo áudio...")
             data, source_rate = sf.read(
@@ -81,41 +85,36 @@ class _SepWorker(QObject):
             source_frames = int(data.shape[0])
             source_channels = int(data.shape[1])
 
-            # Demucs operates at its own sample rate and channel count. Convert
+            # Both models are stereo and run at their own sample rate. Convert
             # the input for the model, then restore each separated stem to the
             # source format before caching or playback.
             waveform = torch.from_numpy(data.T)
-            model_channels = int(getattr(model, "audio_channels", waveform.shape[0]))
-            if waveform.shape[0] == 1 and model_channels == 2:
+            if waveform.shape[0] == 1:
                 waveform = waveform.repeat(2, 1)
-            elif waveform.shape[0] != model_channels:
+            elif waveform.shape[0] != 2:
                 raise ValueError(
-                    f"Demucs requer {model_channels} canais; o áudio tem "
-                    f"{waveform.shape[0]}"
-                )
-            if source_rate != model.samplerate:
-                import torchaudio
-
-                waveform = torchaudio.functional.resample(
-                    waveform, source_rate, model.samplerate
+                    f"A separação requer áudio mono ou estéreo; o áudio tem "
+                    f"{waveform.shape[0]} canais"
                 )
 
-            # add batch dimension: (1, channels, frames)
-            mix = waveform.unsqueeze(0)
-
-            self.progress.emit("Separando instrumentos... (pode levar alguns minutos)")
-            with torch.no_grad():
-                estimates = apply_model(model, mix, device="cpu", shifts=0, split=True)
-            # estimates shape: (1, n_sources, channels, frames)
+            if self._model == HQ_MODEL:
+                sources, model_rate, estimates = self._separate_roformer(
+                    waveform, source_rate
+                )
+            else:
+                sources, model_rate, estimates = self._separate_demucs(
+                    waveform, source_rate
+                )
+            # estimates shape: (n_sources, channels, frames) at model_rate
 
             stems = {}
-            for i, name in enumerate(model.sources):
-                stem_tensor = estimates[0, i]
-                if model.samplerate != source_rate:
+            for i, name in enumerate(sources):
+                stem_tensor = estimates[i]
+                if model_rate != source_rate:
                     import torchaudio
 
                     stem_tensor = torchaudio.functional.resample(
-                        stem_tensor, model.samplerate, source_rate
+                        stem_tensor, model_rate, source_rate
                     )
                 stem_np = stem_tensor.numpy().T.astype(np.float32)
                 stem_np = self._fit_channel_count(stem_np, source_channels)
@@ -129,12 +128,74 @@ class _SepWorker(QObject):
                 source_channels,
                 source_size=source_stat.st_size,
                 source_mtime_ns=source_stat.st_mtime_ns,
+                model=self._model,
             )
             self.progress.emit("Pronto!")
-            self.finished.emit(stems)
+            self.finished.emit(stems, self._model)
 
         except Exception as e:
             self.error.emit(str(e))
+
+    def _separate_demucs(self, waveform, source_rate: int):
+        import torch
+        import torchaudio
+        from demucs.apply import apply_model
+        from demucs.pretrained import get_model
+
+        self.progress.emit("Carregando modelo Demucs...")
+        model = get_model(self._model)
+        model.eval()
+        if source_rate != model.samplerate:
+            waveform = torchaudio.functional.resample(
+                waveform, source_rate, model.samplerate
+            )
+
+        self.progress.emit("Separando instrumentos... (pode levar alguns minutos)")
+        with torch.no_grad():
+            estimates = apply_model(
+                model, waveform.unsqueeze(0), device="cpu", shifts=0, split=True
+            )
+        return model.sources, int(model.samplerate), estimates[0]
+
+    def _separate_roformer(self, waveform, source_rate: int):
+        import torch
+        import torchaudio
+        from services import roformer
+
+        path = roformer.ensure_checkpoint(self.progress.emit)
+        if source_rate != roformer.SAMPLE_RATE:
+            waveform = torchaudio.functional.resample(
+                waveform, source_rate, roformer.SAMPLE_RATE
+            )
+
+        def run(device):
+            self.progress.emit("Carregando modelo de alta qualidade...")
+            model = roformer.load_model(path, device)
+            where = "GPU" if device.type == "cuda" else "CPU, pode demorar bastante"
+            try:
+                return roformer.demix(
+                    model,
+                    waveform,
+                    device,
+                    lambda done, total: self.progress.emit(
+                        f"Separando em alta qualidade ({where})... {done}/{total}"
+                    ),
+                )
+            finally:
+                # Release VRAM right away; other apps may share the GPU.
+                del model
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+
+        device = roformer.inference_device()
+        try:
+            estimates = run(device)
+        except torch.cuda.OutOfMemoryError:
+            if device.type != "cuda":
+                raise
+            self.progress.emit("Memória da GPU insuficiente; usando a CPU...")
+            estimates = run(torch.device("cpu"))
+        return roformer.SOURCES, roformer.SAMPLE_RATE, estimates
 
     def _load_cache(
         self,
@@ -146,6 +207,7 @@ class _SepWorker(QObject):
         source_size: int | None = None,
         source_mtime_ns: int | None = None,
         names: list[str] = STEMS,
+        model: str | None = None,
     ) -> dict[str, np.ndarray]:
         metadata_path = cache_dir / "metadata.json"
         metadata = None
@@ -256,6 +318,7 @@ class _SepWorker(QObject):
                 source_channels,
                 source_size=source_size,
                 source_mtime_ns=source_mtime_ns,
+                model=model,
             )
         return normalized
 
@@ -341,6 +404,7 @@ class _SepWorker(QObject):
         *,
         source_size: int | None = None,
         source_mtime_ns: int | None = None,
+        model: str | None = None,
     ):
         self._recover_cache_transaction(cache_dir)
         cache_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -369,6 +433,8 @@ class _SepWorker(QObject):
                 "source_size": source_size,
                 "source_mtime_ns": source_mtime_ns,
             }
+            if model is not None:
+                metadata["model"] = model
             (staging / "metadata.json").write_text(
                 json.dumps(metadata, indent=2) + "\n"
             )
@@ -389,7 +455,7 @@ class _SepWorker(QObject):
 
 class SeparationService(QObject):
     progress = Signal(str)
-    finished = Signal(dict)
+    finished = Signal(dict, str)
     error = Signal(str)
 
     def __init__(self, parent=None):
@@ -401,12 +467,17 @@ class SeparationService(QObject):
     def is_processing(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
-    def separate(self, file_path: str, song_id: str, force: bool = False):
-        """Load cached stems or run Demucs; ``force`` ignores the cache."""
+    def separate(
+        self,
+        file_path: str,
+        song_id: str,
+        model: str = DEFAULT_MODEL,
+    ):
+        """Load cached stems at least as good as ``model``, or run it."""
         if self.is_processing:
             return
         self._thread = QThread()
-        self._worker = _SepWorker(file_path, song_id, force)
+        self._worker = _SepWorker(file_path, song_id, model)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress.emit)
@@ -414,9 +485,9 @@ class SeparationService(QObject):
         self._worker.error.connect(self._on_error)
         self._thread.start()
 
-    def _on_finished(self, stems: dict):
+    def _on_finished(self, stems: dict, model: str):
         self._cleanup()
-        self.finished.emit(stems)
+        self.finished.emit(stems, model)
 
     def _on_error(self, msg: str):
         self._cleanup()
@@ -429,8 +500,10 @@ class SeparationService(QObject):
             self._thread = None
             self._worker = None
 
-    def has_cache(self, song_id: str) -> bool:
-        return cached_stem_names(CACHE_DIR / song_id) is not None
+    def has_cache(self, song_id: str, model: str = DEFAULT_MODEL) -> bool:
+        """Whether cached stems at least as good as ``model`` exist."""
+        cached = cached_model(CACHE_DIR / song_id)
+        return cached is not None and MODEL_RANK[cached] >= MODEL_RANK[model]
 
 
 def cached_stem_names(cache_dir: Path) -> list[str] | None:
@@ -439,3 +512,18 @@ def cached_stem_names(cache_dir: Path) -> list[str] | None:
         if all((cache_dir / f"{name}.npy").exists() for name in names):
             return names
     return None
+
+
+def cached_model(cache_dir: Path) -> str | None:
+    """Return the model that produced the stems in ``cache_dir``, if complete."""
+    names = cached_stem_names(cache_dir)
+    if names is None:
+        return None
+    try:
+        model = json.loads((cache_dir / "metadata.json").read_text()).get("model")
+    except (OSError, ValueError, AttributeError):
+        model = None
+    if model in MODEL_RANK:
+        return model
+    # Caches written before the model was recorded came from Demucs.
+    return "htdemucs" if names is LEGACY_STEMS else DEFAULT_MODEL

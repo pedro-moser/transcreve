@@ -151,6 +151,26 @@ def run_demucs_smoke_test() -> int:
             return 14
         if not torch.isfinite(estimates).all():
             return 15
+
+        # The high-quality model downloads its weights on demand, so the
+        # packaged build only proves that its code path runs.
+        from services import roformer
+
+        tiny = roformer.BSRoformer(
+            dim=16,
+            depth=1,
+            num_stems=2,
+            time_transformer_depth=1,
+            freq_transformer_depth=1,
+            dim_head=8,
+            heads=2,
+            mask_estimator_depth=2,
+            mlp_expansion_factor=2,
+        ).eval()
+        with torch.inference_mode():
+            separated = tiny(torch.zeros((1, 2, 4_410)))
+        if tuple(separated.shape) != (1, 2, 2, 4_410):
+            return 17
     except Exception:
         if log_path := os.environ.get("TRANSCREVE_SMOKE_LOG"):
             Path(log_path).write_text(traceback.format_exc(), encoding="utf-8")

@@ -223,7 +223,7 @@ Nas próximas vezes, abra o Terminal nessa pasta e repita somente o último coma
 
 ## Instalação completa: acordes e separação de instrumentos
 
-Esta etapa é opcional. Ela instala `librosa`, PyTorch e Demucs para ativar a detecção de acordes e a separação da música em voz, bateria, baixo, guitarra, piano e outros instrumentos (modelo `htdemucs_6s`).
+Esta etapa é opcional. Ela instala `librosa`, PyTorch e Demucs para ativar a detecção de acordes e a separação da música em voz, bateria, baixo, guitarra, piano e outros instrumentos. O modo **Padrão** usa o Demucs (`htdemucs_6s`). O modo **Alta qualidade** usa o BS-RoFormer, que separa melhor baixo e guitarra: baixa ~700 MB na primeira vez e fica lento sem placa de vídeo NVIDIA.
 
 > A instalação completa baixa arquivos grandes e pode ocupar vários gigabytes. A primeira separação também baixa o modelo do Demucs e pode demorar bastante em computadores sem GPU.
 

@@ -58,7 +58,7 @@ class SeparationSampleRateTests(unittest.TestCase):
             errors = []
             with patch.object(separation_service, "CACHE_DIR", cache_root):
                 worker = separation_service._SepWorker(str(source_path), "song-id")
-                worker.finished.connect(results.append)
+                worker.finished.connect(lambda stems, _model: results.append(stems))
                 worker.error.connect(errors.append)
                 worker.run()
 

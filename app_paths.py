@@ -36,3 +36,9 @@ def settings_path() -> Path:
 
 def database_path() -> Path:
     return app_data_dir() / "transcreve.db"
+
+
+def models_dir() -> Path:
+    path = app_data_dir() / "models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
