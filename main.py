@@ -124,7 +124,7 @@ def run_demucs_smoke_test() -> int:
         from demucs.apply import apply_model
         from demucs.pretrained import get_model
 
-        model_name = os.environ.get("TRANSCREVE_DEMUCS_SMOKE_MODEL", "htdemucs")
+        model_name = os.environ.get("TRANSCREVE_DEMUCS_SMOKE_MODEL", "htdemucs_6s")
         model = get_model(model_name)
         model.eval()
         for inner_model in getattr(model, "models", [model]):

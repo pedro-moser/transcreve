@@ -203,6 +203,54 @@ class SeparationSampleRateTests(unittest.TestCase):
                     source_mtime_ns=2_000,
                 )
 
+    def test_legacy_four_stem_cache_still_loads(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "song-id"
+            worker = separation_service._SepWorker("unused.wav", "song-id")
+            stems = {
+                name: np.zeros((120, 2), dtype=np.float32)
+                for name in separation_service.LEGACY_STEMS
+            }
+            worker._save_cache(cache, stems, 48_000, 120, 2)
+
+            names = separation_service.cached_stem_names(cache)
+            self.assertEqual(names, separation_service.LEGACY_STEMS)
+            loaded = worker._load_cache(cache, 48_000, 120, 2, names=names)
+            self.assertEqual(set(loaded), set(separation_service.LEGACY_STEMS))
+
+    def test_six_stem_cache_replaces_legacy_cache(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "song-id"
+            worker = separation_service._SepWorker("unused.wav", "song-id")
+            for names in (separation_service.LEGACY_STEMS, separation_service.STEMS):
+                worker._save_cache(
+                    cache,
+                    {name: np.zeros((120, 2), dtype=np.float32) for name in names},
+                    48_000,
+                    120,
+                    2,
+                )
+
+            self.assertEqual(
+                separation_service.cached_stem_names(cache), separation_service.STEMS
+            )
+            self.assertEqual(
+                sorted(p.stem for p in cache.glob("*.npy")),
+                sorted(separation_service.STEMS),
+            )
+
+    def test_unknown_stem_set_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            worker = separation_service._SepWorker("unused.wav", "song-id")
+            with self.assertRaises(separation_service.InvalidStemCacheError):
+                worker._save_cache(
+                    Path(tmp) / "song-id",
+                    {"vocals": np.zeros((120, 2), dtype=np.float32)},
+                    48_000,
+                    120,
+                    2,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

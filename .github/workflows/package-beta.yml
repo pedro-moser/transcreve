@@ -38,7 +38,7 @@ jobs:
             os: windows-2022
             python_arch: x64
             expected_machine: AMD64
-            demucs_smoke_model: htdemucs
+            demucs_smoke_model: htdemucs_6s
             rubberband_path: packaging/vendor/bin/rubberband.exe
             requirements_file: requirements-full.txt
           - asset_id: macos-intel
@@ -52,7 +52,7 @@ jobs:
             os: macos-15
             python_arch: arm64
             expected_machine: arm64
-            demucs_smoke_model: htdemucs
+            demucs_smoke_model: htdemucs_6s
             rubberband_path: packaging/vendor/bin/rubberband
             requirements_file: requirements-full.txt
 

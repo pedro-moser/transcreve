@@ -7,7 +7,12 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from app_paths import stems_dir
 
-STEMS = ["vocals", "drums", "bass", "other"]
+MODEL_NAME = "htdemucs_6s"
+STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+# Caches written by the 4-stem htdemucs model are still loadable; the UI offers
+# to re-separate them so guitar and piano get their own stems.
+LEGACY_STEMS = ["vocals", "drums", "bass", "other"]
+STEM_SETS = (STEMS, LEGACY_STEMS)
 CACHE_DIR = stems_dir()
 
 
@@ -20,10 +25,11 @@ class _SepWorker(QObject):
     finished = Signal(dict)  # {name: ndarray} or empty on error
     error = Signal(str)
 
-    def __init__(self, file_path: str, song_id: str):
+    def __init__(self, file_path: str, song_id: str, force: bool = False):
         super().__init__()
         self._file_path = file_path
         self._song_id = song_id
+        self._force = force
 
     def run(self):
         try:
@@ -38,7 +44,8 @@ class _SepWorker(QObject):
 
             cache = CACHE_DIR / self._song_id
             self._recover_cache_transaction(cache)
-            if self._check_cache(cache):
+            cached_names = None if self._force else cached_stem_names(cache)
+            if cached_names is not None:
                 self.progress.emit("Carregando stems do cache...")
                 try:
                     stems = self._load_cache(
@@ -48,6 +55,7 @@ class _SepWorker(QObject):
                         source_channels,
                         source_size=source_stat.st_size,
                         source_mtime_ns=source_stat.st_mtime_ns,
+                        names=cached_names,
                     )
                 except InvalidStemCacheError:
                     self.progress.emit("Cache inconsistente; separando novamente...")
@@ -62,7 +70,7 @@ class _SepWorker(QObject):
             from demucs.pretrained import get_model
             from demucs.apply import apply_model
 
-            model = get_model("htdemucs")
+            model = get_model(MODEL_NAME)
             model.eval()
 
             self.progress.emit("Lendo áudio...")
@@ -128,14 +136,6 @@ class _SepWorker(QObject):
         except Exception as e:
             self.error.emit(str(e))
 
-    def _check_cache(self, cache_dir: Path) -> bool:
-        if not cache_dir.exists():
-            return False
-        for name in STEMS:
-            if not (cache_dir / f"{name}.npy").exists():
-                return False
-        return True
-
     def _load_cache(
         self,
         cache_dir: Path,
@@ -145,6 +145,7 @@ class _SepWorker(QObject):
         *,
         source_size: int | None = None,
         source_mtime_ns: int | None = None,
+        names: list[str] = STEMS,
     ) -> dict[str, np.ndarray]:
         metadata_path = cache_dir / "metadata.json"
         metadata = None
@@ -156,7 +157,7 @@ class _SepWorker(QObject):
 
         stems: dict[str, np.ndarray] = {}
         try:
-            for name in STEMS:
+            for name in names:
                 stem = np.load(cache_dir / f"{name}.npy", allow_pickle=False)
                 if stem.ndim != 2 or not np.issubdtype(stem.dtype, np.number):
                     raise InvalidStemCacheError(
@@ -347,10 +348,14 @@ class _SepWorker(QObject):
         backup = self._backup_cache_path(cache_dir)
         staging.mkdir(parents=True)
 
+        names = next((names for names in STEM_SETS if set(names) == set(stems)), None)
+        if names is None:
+            raise InvalidStemCacheError(f"Conjunto de stems inesperado: {sorted(stems)}")
+
         try:
-            for name in STEMS:
-                data = stems.get(name)
-                if data is None or data.shape != (frame_count, channels):
+            for name in names:
+                data = stems[name]
+                if data.shape != (frame_count, channels):
                     raise InvalidStemCacheError(
                         f"Stem {name} não corresponde ao formato de origem"
                     )
@@ -396,11 +401,12 @@ class SeparationService(QObject):
     def is_processing(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
-    def separate(self, file_path: str, song_id: str):
+    def separate(self, file_path: str, song_id: str, force: bool = False):
+        """Load cached stems or run Demucs; ``force`` ignores the cache."""
         if self.is_processing:
             return
         self._thread = QThread()
-        self._worker = _SepWorker(file_path, song_id)
+        self._worker = _SepWorker(file_path, song_id, force)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress.emit)
@@ -424,5 +430,12 @@ class SeparationService(QObject):
             self._worker = None
 
     def has_cache(self, song_id: str) -> bool:
-        cache = CACHE_DIR / song_id
-        return all((cache / f"{n}.npy").exists() for n in STEMS)
+        return cached_stem_names(CACHE_DIR / song_id) is not None
+
+
+def cached_stem_names(cache_dir: Path) -> list[str] | None:
+    """Return the complete stem set stored in ``cache_dir``, newest first."""
+    for names in STEM_SETS:
+        if all((cache_dir / f"{name}.npy").exists() for name in names):
+            return names
+    return None
