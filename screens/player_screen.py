@@ -295,6 +295,9 @@ class PlayerScreen(QWidget):
         self._btn_separate.setCursor(Qt.PointingHandCursor)
         self._btn_separate.clicked.connect(self._start_separation)
         stems_layout.addWidget(self._btn_separate)
+        # Song a running separation belongs to; the user may switch songs
+        # while it runs.
+        self._sep_song_id: str | None = None
 
         self._sep_status = QLabel("")
         self._sep_status.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 11px;")
@@ -711,15 +714,24 @@ class PlayerScreen(QWidget):
             return
         # With 4-stem stems already loaded, the button re-runs the 6-stem model.
         force = self._audio.has_stems
+        self._sep_song_id = self._song.id
         self._btn_separate.setEnabled(False)
         self._sep_status.setText("Iniciando...")
         self._separator.separate(self._song.file_path, self._song.id, force=force)
 
+    def _is_sep_song_open(self) -> bool:
+        return self._song is not None and self._song.id == self._sep_song_id
+
     def _on_sep_progress(self, msg: str):
-        self._sep_status.setText(msg)
+        if self._is_sep_song_open():
+            self._sep_status.setText(msg)
 
     def _on_sep_finished(self, stems: dict):
         self._sep_status.setText("")
+        if not self._is_sep_song_open():
+            # Finished for a song that is no longer open; it stays cached.
+            self._reset_separate_button()
+            return
         self._audio.load_stems(stems)
         for name, btn in self._stem_buttons.items():
             btn.setChecked(True)
@@ -737,7 +749,22 @@ class PlayerScreen(QWidget):
 
     def _on_sep_error(self, msg: str):
         self._btn_separate.setEnabled(True)
-        self._sep_status.setText(f"Erro: {msg[:60]}")
+        if self._is_sep_song_open():
+            self._sep_status.setText(f"Erro: {msg[:60]}")
+
+    def _reset_separate_button(self):
+        self._btn_separate.show()
+        self._btn_separate.setToolTip("")
+        if self._separator.is_processing:
+            self._btn_separate.setEnabled(False)
+            self._sep_status.setText("Separando outra música...")
+            return
+        self._btn_separate.setEnabled(True)
+        self._sep_status.setText("")
+        if self._separator.has_cache(self._song.id):
+            self._btn_separate.setText("🎛 Carregar stems")
+        else:
+            self._btn_separate.setText("🎛 Separar instrumentos")
 
     def _on_stem_toggle(self, name: str):
         from PySide6.QtWidgets import QApplication as _QApp
@@ -948,14 +975,7 @@ class PlayerScreen(QWidget):
         for btn in self._stem_buttons.values():
             btn.hide()
         self._btn_unsolo.hide()
-        self._btn_separate.show()
-        self._btn_separate.setEnabled(True)
-        self._btn_separate.setToolTip("")
-        self._sep_status.setText("")
-        if self._separator.has_cache(song.id):
-            self._btn_separate.setText("🎛 Carregar stems")
-        else:
-            self._btn_separate.setText("🎛 Separar instrumentos")
+        self._reset_separate_button()
 
         # async load — waveform rendered in _on_loading callback
         self._audio.load(song.file_path)
