@@ -1,0 +1,28 @@
+# Exemplo de roteiro para a Fase 0 (formato em validation/roteiro.py).
+# Casa por corda, da 6ª (E grave) para a 1ª (e agudo); x = não toca.
+# Para fechar 40 notas por classe, repita e varie os voicings por região do braço.
+
+bpm 60
+batidas 2
+contagem 4
+
+# 2ª menor
+x x 10 7 0 x      # B3 C4 D4: 7-1-2 em C, com corda solta
+x x x 4 1 0       # B3 C4 E4
+x 3 2 4 1 x       # C3 E3 B3 C4
+x 1 x 3 0 x       # Bb2 Bb3 B3
+
+# 2ª maior
+x x 7 7 5 x       # A3 D4 E4
+x x 0 2 0 0       # D3 A3 B3 E4
+x x 7 6 0 0       # A3 B3 C#4 E4
+x x 3 0 0 3       # F3 G3 B3 G4
+
+# 3ª ou mais
+x 3 5 4 5 3       # C3 G3 B3 E4 G4
+x x 5 4 3 x       # G3 B3 D4
+
+# isoladas
+x x x x x 5       # A4
+x x 7 x x x       # A3
+3 x x x x x | 4   # G2, quatro batidas

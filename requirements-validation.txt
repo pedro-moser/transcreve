@@ -1,0 +1,4 @@
+-r requirements-full.txt
+
+# Fase 0 de SPEC-notas.md: validação do Basic Pitch (validation/). O
+# onnxruntime já vem da instalação completa.

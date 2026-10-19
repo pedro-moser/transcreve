@@ -9,3 +9,5 @@ torch==2.2.2
 torchaudio==2.2.2
 dora-search==0.1.12
 demucs==4.0.1
+# Last ONNX Runtime with Python 3.12 wheels for macOS 13 (x86_64 included).
+onnxruntime==1.23.2

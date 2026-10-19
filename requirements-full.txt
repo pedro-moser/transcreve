@@ -7,3 +7,7 @@ torch==2.11.0
 torchaudio==2.11.0
 dora-search==0.1.12
 demucs==4.0.1
+# Detecção de notas (Basic Pitch em services/basic_pitch.py).
+onnxruntime==1.31.0; sys_platform != "darwin"
+# Para macOS 13 com Python 3.12, o pip só encontra wheels até a 1.23.2.
+onnxruntime==1.23.2; sys_platform == "darwin"

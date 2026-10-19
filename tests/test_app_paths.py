@@ -22,6 +22,7 @@ class AppPathsTests(unittest.TestCase):
             with patch.object(app_paths, "user_data_path", return_value=root):
                 self.assertEqual(app_paths.music_dir(), root / "music")
                 self.assertEqual(app_paths.stems_dir(), root / "stems")
+                self.assertEqual(app_paths.analysis_dir(), root / "analysis")
                 self.assertEqual(app_paths.tools_dir(), root / "tools")
                 self.assertEqual(app_paths.settings_path(), root / "settings.json")
                 self.assertEqual(app_paths.database_path(), root / "transcreve.db")

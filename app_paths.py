@@ -24,6 +24,12 @@ def stems_dir() -> Path:
     return path
 
 
+def analysis_dir() -> Path:
+    path = app_data_dir() / "analysis"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def tools_dir() -> Path:
     path = app_data_dir() / "tools"
     path.mkdir(parents=True, exist_ok=True)

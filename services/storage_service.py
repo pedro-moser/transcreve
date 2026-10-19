@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from models.position_fix import PositionFix
 from models.section import Section
 from models.song import Song
 from app_paths import database_path
@@ -32,6 +33,17 @@ class StorageService:
                 notes TEXT DEFAULT '',
                 duration_ms INTEGER DEFAULT 0,
                 added_at TEXT NOT NULL
+            );
+            -- User edits to detected notes (SPEC-notas.md, modelo de dados),
+            -- anchored on pitch and onset so they survive re-analysis.
+            -- kind 'posicao': data = {"string": n}.
+            CREATE TABLE IF NOT EXISTS note_edits (
+                song_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                pitch INTEGER NOT NULL,
+                onset_ms INTEGER NOT NULL,
+                data TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (song_id, kind, pitch, onset_ms)
             );
         """)
         self._conn.commit()
@@ -70,7 +82,35 @@ class StorageService:
 
     def delete_song(self, song_id: str):
         self._conn.execute("DELETE FROM songs WHERE id = ?", (song_id,))
+        self._conn.execute("DELETE FROM note_edits WHERE song_id = ?", (song_id,))
         self._conn.commit()
+
+    def get_position_fixes(self, song_id: str) -> list[PositionFix]:
+        rows = self._conn.execute(
+            """SELECT pitch, onset_ms, data FROM note_edits
+               WHERE song_id = ? AND kind = 'posicao' ORDER BY onset_ms, pitch""",
+            (song_id,),
+        ).fetchall()
+        return [
+            PositionFix(row["pitch"], row["onset_ms"] / 1000, json.loads(row["data"])["string"])
+            for row in rows
+        ]
+
+    def set_position_fixes(self, song_id: str, fixes: list[PositionFix]):
+        """Replace every fixed position of ``song_id``."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM note_edits WHERE song_id = ? AND kind = 'posicao'",
+                (song_id,),
+            )
+            self._conn.executemany(
+                """INSERT OR REPLACE INTO note_edits (song_id, kind, pitch, onset_ms, data)
+                   VALUES (?, 'posicao', ?, ?, ?)""",
+                [
+                    (song_id, fix.pitch, round(fix.onset * 1000), json.dumps({"string": fix.string}))
+                    for fix in fixes
+                ],
+            )
 
     def _row_to_song(self, row: sqlite3.Row) -> Song:
         sections_data = json.loads(row["sections"])

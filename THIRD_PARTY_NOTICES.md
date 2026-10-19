@@ -36,6 +36,14 @@ The downloaded FFmpeg binary is a separate program and remains governed by its u
 
 The installers do not contain model weights. When a user selects "Alta qualidade", the application downloads the community "BS-Roformer-SW" checkpoint from the python-audio-separator release assets and verifies its SHA-256 checksum. No license is published for these weights.
 
+## Basic Pitch (note detection)
+
+`assets/models/basic-pitch-nmp.onnx` is the unmodified ONNX model from the `basic-pitch` 0.4.0 package by Spotify AB, and `services/basic_pitch.py` ports its windowing and note-decoding code; that file marks where it changes upstream behavior. Both are under the Apache License 2.0. The full license and Spotify's NOTICE are in `assets/models/basic-pitch-LICENSE.txt` and `assets/models/basic-pitch-NOTICE.txt`.
+
+- Project: <https://github.com/spotify/basic-pitch>, Copyright 2022 Spotify AB
+
+The installers include the model and its license files. It detects the guitar notes shown in the player and is also used by the offline validation tools in `validation/`.
+
 ## Python libraries
 
 The application also bundles Python, PySide6, NumPy, SciPy, SoundFile, SoundDevice, pyqtgraph, yt-dlp, librosa, PyTorch, TorchAudio, Demucs and their transitive dependencies. Their license metadata and notices remain available in the Python package distributions and upstream repositories.

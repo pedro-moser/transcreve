@@ -24,6 +24,8 @@ datas = [
     (str(PROJECT_ROOT / "LICENSE"), "."),
     (str(PROJECT_ROOT / "THIRD_PARTY_NOTICES.md"), "."),
 ]
+for name in ("basic-pitch-nmp.onnx", "basic-pitch-LICENSE.txt", "basic-pitch-NOTICE.txt"):
+    datas.append((str(PROJECT_ROOT / "assets" / "models" / name), "assets/models"))
 
 vendor_licenses = VENDOR_DIR / "licenses"
 if vendor_licenses.exists():
@@ -35,6 +37,7 @@ for package in [
     "dora",
     "julius",
     "librosa",
+    "onnxruntime",
     "openunmix",
     "torchaudio",
     "pyrubberband",
@@ -54,6 +57,7 @@ for distribution in [
     "demucs",
     "dora-search",
     "librosa",
+    "onnxruntime",
     "pyrubberband",
     "sounddevice",
     "soundfile",

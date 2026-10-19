@@ -27,6 +27,22 @@ class OptionalDependencyTests(unittest.TestCase):
 
         self.assertTrue(hasattr(module, "SeparationService"))
 
+    def test_player_imports_without_onnxruntime(self):
+        """Note detection is optional; the player must load without it."""
+        original_import = builtins.__import__
+
+        def import_without_onnxruntime(name, *args, **kwargs):
+            if name == "onnxruntime" or name.startswith("onnxruntime."):
+                raise ModuleNotFoundError("No module named 'onnxruntime'")
+            return original_import(name, *args, **kwargs)
+
+        for name in ("services.note_detection_service", "screens.player_screen"):
+            sys.modules.pop(name, None)
+        with patch("builtins.__import__", side_effect=import_without_onnxruntime):
+            module = importlib.import_module("screens.player_screen")
+
+        self.assertTrue(hasattr(module, "PlayerScreen"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,6 +66,7 @@ def run_smoke_test(app: QApplication, tools: dict) -> int:
         import demucs
         import librosa  # noqa: F401
         import numpy as np
+        import onnxruntime  # noqa: F401
         import pyrubberband as pyrb
         import soundfile as sf
         import torch
@@ -99,6 +100,12 @@ def run_smoke_test(app: QApplication, tools: dict) -> int:
         stretched = pyrb.time_stretch(tone, 44_100, 0.9)
         if stretched.size <= tone.size:
             return 6
+
+        from services import basic_pitch
+
+        activations = basic_pitch.infer(tone, 44_100, basic_pitch.load_session())
+        if activations.note.shape[1] != basic_pitch.N_PITCHES:
+            return 9
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

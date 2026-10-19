@@ -3,6 +3,7 @@ import uuid
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
     QGridLayout,
@@ -15,15 +16,18 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from models.position_fix import PositionFix
 from models.section import Section
 from models.song import Song
 from services.audio_service import AudioService
 from services.chord_service import ChordService
+from services import fretting
 from app_settings import load_setting, save_setting
 from services.separation_service import (
     DEFAULT_MODEL,
@@ -32,7 +36,14 @@ from services.separation_service import (
     STEMS,
     SeparationService,
 )
+from services.note_detection_service import (
+    NoteDetectionService,
+    has_guitar_stem,
+    is_available as notes_available,
+)
 from services.storage_service import StorageService
+from widgets.note_roll_widget import NoteRollWidget
+from widgets.tab_widget import TabWidget
 from widgets.waveform_widget import WaveformWidget
 import theme
 
@@ -67,6 +78,8 @@ class PlayerScreen(QWidget):
                 ("C", "C", "Definir cue point"),
                 ("M", "M", "Adicionar seção"),
                 ("D", "D", "Detectar acorde na posição atual"),
+                ("N", "N", "Mostrar / ocultar notas da guitarra"),
+                ("T", "T", "Alternar tab / piano-roll"),
             ],
         ),
     ]
@@ -80,6 +93,22 @@ class PlayerScreen(QWidget):
         self._separator.progress.connect(self._on_sep_progress)
         self._separator.finished.connect(self._on_sep_finished)
         self._separator.error.connect(self._on_sep_error)
+        self._notes = NoteDetectionService(self)
+        self._notes.progress.connect(self._on_notes_progress)
+        self._notes.finished.connect(self._on_notes_finished)
+        self._notes.error.connect(self._on_notes_error)
+        self._notes_supported = notes_available()
+        # Song whose notes were last requested, so they load once per song.
+        self._notes_song_id: str | None = None
+        # Its detected notes, before the threshold, and the positions the
+        # user fixed for them.
+        self._detected_notes: list = []
+        self._position_fixes: list[PositionFix] = []
+        # Fingering a song takes ~0.1 s; wait for the threshold slider to rest.
+        self._tab_timer = QTimer(self)
+        self._tab_timer.setSingleShot(True)
+        self._tab_timer.setInterval(150)
+        self._tab_timer.timeout.connect(self._update_tab)
         self._song: Song | None = None
         self._selected_section: Section | None = None
         self._save_timer = QTimer(self)
@@ -360,7 +389,82 @@ class PlayerScreen(QWidget):
         self._btn_unsolo.hide()
         stems_layout.addWidget(self._btn_unsolo)
 
+        self._btn_notes = QPushButton("🎼 Ver notas")
+        self._btn_notes.setAccessibleName("Mostrar ou ocultar as notas da guitarra")
+        self._btn_notes.setAccessibleDescription("Atalho N")
+        self._btn_notes.setToolTip("N · mostrar as notas detectadas no stem de guitarra")
+        self._btn_notes.setFixedHeight(28)
+        self._btn_notes.setCursor(Qt.PointingHandCursor)
+        self._btn_notes.setCheckable(True)
+        self._btn_notes.setChecked(bool(load_setting("show_notes", True)))
+        self._btn_notes.toggled.connect(self._on_notes_toggled)
+        self._btn_notes.hide()
+        stems_layout.addSpacing(8)
+        stems_layout.addWidget(self._btn_notes)
+        self._update_notes_btn_style()
+
         root.addWidget(self._stems_widget)
+
+        # --- detected notes ---
+        self._notes_area = QWidget()
+        self._notes_area.setStyleSheet(f"background-color: {theme.MANTLE};")
+        na_layout = QVBoxLayout(self._notes_area)
+        na_layout.setContentsMargins(20, 6, 20, 6)
+        na_layout.setSpacing(4)
+
+        na_header = QHBoxLayout()
+        self._notes_title = QLabel("Notas da guitarra")
+        self._notes_title.setStyleSheet(f"color: {theme.OVERLAY0}; font-weight: bold; font-size: 13px;")
+        na_header.addWidget(self._notes_title)
+        self._notes_view_buttons: dict[str, QPushButton] = {}
+        view_group = QButtonGroup(self)
+        for key, label in (("tab", "Tab"), ("roll", "Piano-roll")):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedHeight(24)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip("T · alternar entre tab e piano-roll")
+            btn.clicked.connect(lambda _, k=key: self._set_notes_view(k))
+            view_group.addButton(btn)
+            na_header.addWidget(btn)
+            self._notes_view_buttons[key] = btn
+        self._notes_status = QLabel("")
+        self._notes_status.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 11px;")
+        na_header.addWidget(self._notes_status)
+        na_header.addStretch()
+
+        self._notes_threshold_title = QLabel("Limiar")
+        self._notes_threshold_title.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 12px;")
+        na_header.addWidget(self._notes_threshold_title)
+        self._notes_threshold = QSlider(Qt.Horizontal)
+        self._notes_threshold.setRange(20, 80)
+        self._notes_threshold.setSingleStep(5)
+        self._notes_threshold.setFixedWidth(140)
+        self._notes_threshold.setAccessibleName("Limiar das notas")
+        self._notes_threshold.setToolTip(
+            "Esconde as notas com score abaixo do limiar. O score é a ativação "
+            "média do modelo, ainda sem calibração"
+        )
+        self._notes_threshold.setValue(int(load_setting("note_threshold", 35)))
+        self._notes_threshold.valueChanged.connect(self._on_notes_threshold)
+        na_header.addWidget(self._notes_threshold)
+        self._notes_threshold_label = QLabel()
+        self._notes_threshold_label.setStyleSheet(f"color: {theme.MAUVE}; font-family: monospace; font-size: 12px;")
+        self._notes_threshold_label.setFixedWidth(36)
+        na_header.addWidget(self._notes_threshold_label)
+        na_layout.addLayout(na_header)
+
+        self._tab = TabWidget()
+        self._tab.position_chosen.connect(self._on_position_chosen)
+        self._tab.position_cleared.connect(self._on_position_cleared)
+        self._note_roll = NoteRollWidget()
+        self._notes_views = QStackedWidget()
+        self._notes_views.addWidget(self._tab)
+        self._notes_views.addWidget(self._note_roll)
+        na_layout.addWidget(self._notes_views, stretch=1)
+        self._notes_area.hide()
+        self._apply_notes_threshold(self._notes_threshold.value())
+        self._set_notes_view(load_setting("notes_view", "tab"), save=False)
 
         # --- bottom panel: sections + notes ---
         splitter = QSplitter(Qt.Horizontal)
@@ -443,7 +547,14 @@ class PlayerScreen(QWidget):
         splitter.addWidget(notes_w)
         splitter.setSizes([280, 500])
 
-        root.addWidget(splitter, stretch=1)
+        body = QSplitter(Qt.Vertical)
+        body.setChildrenCollapsible(False)
+        body.setStyleSheet(f"QSplitter::handle {{ background-color: {theme.SURFACE0}; height: 2px; }}")
+        body.addWidget(self._notes_area)
+        body.addWidget(splitter)
+        body.setStretchFactor(0, 3)
+        body.setStretchFactor(1, 2)
+        root.addWidget(body, stretch=1)
 
         self._update_loop_ui()
 
@@ -593,6 +704,8 @@ class PlayerScreen(QWidget):
             "M": self._add_section,
             "C": self._set_cue_point,
             "D": self._detect_chord,
+            "N": self._toggle_notes,
+            "T": self._toggle_notes_view,
         }
         for _, shortcuts in self.SHORTCUT_GROUPS:
             for sequence, _, _ in shortcuts:
@@ -627,6 +740,8 @@ class PlayerScreen(QWidget):
                     self._audio.sample_rate,
                     self._audio.duration_ms,
                 )
+                self._note_roll.set_duration(self._audio.duration_ms)
+                self._tab.set_duration(self._audio.duration_ms)
                 # start chord analysis in background
                 self._chord_label.setText("")
                 self._chords.analyze(self._audio.audio_data, self._audio.sample_rate)
@@ -636,6 +751,8 @@ class PlayerScreen(QWidget):
     def _on_position(self, ms: int):
         self._pos_label.setText(self._fmt(ms))
         self._waveform.set_position(ms)
+        if not self._notes_area.isHidden():
+            self._notes_views.currentWidget().set_position(ms)
 
     def _on_duration(self, ms: int):
         self._dur_label.setText(self._fmt(ms))
@@ -692,6 +809,8 @@ class PlayerScreen(QWidget):
         enabled = self._audio.loop_enabled
 
         self._waveform.set_loop_region(a, b, enabled)
+        self._note_roll.set_loop_region(a, b, enabled)
+        self._tab.set_loop_region(a, b, enabled)
 
         a_text = f"A {self._fmt_short(a)}" if a is not None else "A"
         b_text = f"B {self._fmt_short(b)}" if b is not None else "B"
@@ -796,6 +915,8 @@ class PlayerScreen(QWidget):
             self._update_stem_btn_style(name)
         self._btn_unsolo.show()
         self._update_separate_button()
+        # New stems make cached notes stale; detection checks the cache.
+        self._refresh_notes_ui(detect=True)
 
     def _on_sep_error(self, msg: str):
         self._sep_quality.setEnabled(True)
@@ -833,6 +954,168 @@ class PlayerScreen(QWidget):
         else:
             btn.setStyleSheet(
                 f"color: {theme.SURFACE1}; background-color: transparent; border: 1px solid {theme.SURFACE1}; border-radius: 6px; font-size: 11px; padding: 2px 8px;"
+            )
+
+    # ── Detected notes ──────────────────────────────────
+
+    def _refresh_notes_ui(self, detect: bool = False):
+        """Offer the notes once the song has a guitar stem; load them if shown."""
+        available = (
+            self._song is not None
+            and self._notes_supported
+            and has_guitar_stem(self._song.id)
+        )
+        self._btn_notes.setVisible(available)
+        show = available and self._btn_notes.isChecked()
+        self._notes_area.setVisible(show)
+        if show:
+            self._notes_views.currentWidget().set_position(self._audio.position_ms)
+            if detect or self._notes_song_id != self._song.id:
+                self._notes_song_id = self._song.id
+                self._notes_status.setText("Carregando notas...")
+                self._notes.detect(self._song.id)
+
+    def _toggle_notes(self):
+        if not self._btn_notes.isHidden():
+            self._btn_notes.toggle()
+
+    def _on_notes_toggled(self, checked: bool):
+        save_setting("show_notes", checked)
+        self._update_notes_btn_style()
+        self._refresh_notes_ui()
+
+    def _toggle_notes_view(self):
+        if not self._notes_area.isHidden():
+            current = self._notes_views.currentWidget()
+            self._set_notes_view("roll" if current is self._tab else "tab")
+
+    def _set_notes_view(self, view: str, save: bool = True):
+        if view not in self._notes_view_buttons:
+            view = "tab"
+        widget = self._tab if view == "tab" else self._note_roll
+        previous = self._notes_views.currentWidget()
+        if widget is not previous:
+            widget.window_ms = previous.window_ms
+            self._notes_views.setCurrentWidget(widget)
+        widget.set_position(self._audio.position_ms)
+        self._notes_view_buttons[view].setChecked(True)
+        self._update_notes_view_styles()
+        if save:
+            save_setting("notes_view", view)
+        self._show_notes_count()
+
+    def _on_notes_threshold(self, value: int):
+        self._apply_notes_threshold(value)
+        save_setting("note_threshold", value)
+        self._show_notes_count()
+
+    def _apply_notes_threshold(self, value: int):
+        self._notes_threshold_label.setText(f"{value / 100:.2f}")
+        self._note_roll.set_threshold(value / 100)
+        self._tab_timer.start()
+
+    def _visible_notes(self) -> list:
+        threshold = self._notes_threshold.value() / 100
+        return [n for n in self._detected_notes if n.score >= threshold]
+
+    def _update_tab(self):
+        self._tab_timer.stop()
+        self._tab.set_notes(
+            fretting.assign_positions(self._visible_notes(), self._position_fixes),
+            self._notes_threshold.value() / 100,
+        )
+        self._show_notes_count()
+
+    def _show_notes_count(self):
+        if self._notes_song_id is None or self._notes.is_processing:
+            return
+        count = self._note_roll.visible_note_count
+        parts = [f"{count} nota{'s' if count != 1 else ''}"]
+        if self._notes_views.currentWidget() is self._tab:
+            misfits = sum(not n.playable for n in self._tab.notes)
+            if misfits:
+                parts.append(f"{misfits} fora da digitação")
+        # Against every detected note: a fix on a note below the threshold
+        # is hidden, not orphaned.
+        orphans = len(fretting.orphan_fixes(self._detected_notes, self._position_fixes))
+        if orphans:
+            parts.append(
+                f"{orphans} posição fixada sem nota" if orphans == 1
+                else f"{orphans} posições fixadas sem nota"
+            )
+        self._notes_status.setText(" · ".join(parts))
+
+    def _on_position_chosen(self, note, string: int):
+        """Fix ``note`` on ``string``; a fix in the same chord on that string gives way."""
+        chord = next(
+            (
+                event for event in fretting.group_events(self._visible_notes())
+                if any(n.pitch == note.pitch and abs(n.onset - note.onset) < 1e-6 for n in event)
+            ),
+            [note],
+        )
+        fixes = [
+            fix for fix in self._position_fixes
+            if not self._fix_anchors(fix, note)
+            and not (fix.string == string and any(self._fix_anchors(fix, n) for n in chord))
+        ]
+        fixes.append(PositionFix(note.pitch, note.onset, string))
+        self._save_position_fixes(fixes)
+
+    def _on_position_cleared(self, note):
+        self._save_position_fixes(
+            [fix for fix in self._position_fixes if not self._fix_anchors(fix, note)]
+        )
+
+    @staticmethod
+    def _fix_anchors(fix: PositionFix, note) -> bool:
+        return (
+            fix.pitch == note.pitch
+            and abs(fix.onset - note.onset) <= fretting.ANCHOR_TOLERANCE
+        )
+
+    def _save_position_fixes(self, fixes: list[PositionFix]):
+        if not self._song:
+            return
+        self._position_fixes = fixes
+        self._storage.set_position_fixes(self._song.id, fixes)
+        self._update_tab()
+
+    def _on_notes_progress(self, song_id: str, msg: str):
+        if self._song and self._song.id == song_id:
+            self._notes_status.setText(msg)
+
+    def _on_notes_finished(self, song_id: str, notes: list):
+        if not self._song or self._song.id != song_id:
+            return  # finished for a song that is no longer open; it stays cached
+        self._detected_notes = notes
+        self._position_fixes = self._storage.get_position_fixes(song_id)
+        self._note_roll.set_notes(notes)
+        self._update_tab()
+
+    def _on_notes_error(self, song_id: str, msg: str):
+        if self._song and self._song.id == song_id:
+            self._notes_status.setText(f"Erro: {msg[:60]}")
+
+    def _update_notes_view_styles(self):
+        for btn in self._notes_view_buttons.values():
+            if btn.isChecked():
+                btn.setStyleSheet(
+                    f"color: {theme.TEXT}; background-color: {theme.SURFACE0}; border: 1px solid {theme.MAUVE}; border-radius: 5px; font-size: 11px; padding: 1px 8px;"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"color: {theme.OVERLAY0}; background-color: transparent; border: 1px solid {theme.SURFACE1}; border-radius: 5px; font-size: 11px; padding: 1px 8px;"
+                )
+
+    def _update_notes_btn_style(self):
+        if self._btn_notes.isChecked():
+            self._btn_notes.setStyleSheet(
+                f"color: {theme.TEXT}; background-color: {theme.SURFACE0}; border: 1px solid {theme.MAUVE}; border-radius: 6px; font-size: 11px; padding: 2px 8px;"
+            )
+        else:
+            self._btn_notes.setStyleSheet(
+                f"color: {theme.OVERLAY0}; background-color: transparent; border: 1px solid {theme.SURFACE1}; border-radius: 6px; font-size: 11px; padding: 2px 8px;"
             )
 
     # ── Sections ────────────────────────────────────────
@@ -1019,6 +1302,14 @@ class PlayerScreen(QWidget):
             self._sep_status.setText("")
         self._update_separate_button()
 
+        self._note_roll.clear_notes()
+        self._tab.clear_notes()
+        self._detected_notes = []
+        self._position_fixes = []
+        self._notes_status.setText("")
+        self._notes_song_id = None
+        self._refresh_notes_ui()
+
         # async load — waveform rendered in _on_loading callback
         self._audio.load(song.file_path)
 
@@ -1069,6 +1360,15 @@ class PlayerScreen(QWidget):
                 self._update_stem_btn_style(name)
         # update waveform
         self._waveform.refresh_theme()
+        self._note_roll.refresh_theme()
+        self._tab.refresh_theme()
+        self._update_notes_view_styles()
+        self._update_notes_btn_style()
+        self._notes_area.setStyleSheet(f"background-color: {theme.MANTLE};")
+        self._notes_title.setStyleSheet(f"color: {theme.OVERLAY0}; font-weight: bold; font-size: 13px;")
+        self._notes_status.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 11px;")
+        self._notes_threshold_title.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 12px;")
+        self._notes_threshold_label.setStyleSheet(f"color: {theme.MAUVE}; font-family: monospace; font-size: 12px;")
         # update sections list
         self._sections_list.setStyleSheet(f"""
             QListWidget {{ background-color: {theme.BASE}; border: none; }}
@@ -1085,3 +1385,4 @@ class PlayerScreen(QWidget):
         self._save()
         self._audio.dispose()
         self._chords.dispose()
+        self._notes.dispose()

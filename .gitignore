@@ -38,3 +38,6 @@ packaging/generated/
 
 # Local agent configuration
 .claude/settings.local.json
+
+# Resultados locais da validação (validation/README.md)
+validation/escuta/
