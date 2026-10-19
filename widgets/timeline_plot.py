@@ -47,6 +47,9 @@ class TimelinePlot(pg.PlotWidget):
         self.getPlotItem().setContentsMargins(0, 0, 4, 0)
         self.getViewBox().setDefaultPadding(0)
         self.getViewBox().disableAutoRange()
+        # The time axis is rebuilt on every frame while the view scrolls:
+        # label only the main ticks and skip the finest ones.
+        self.getPlotItem().getAxis("bottom").setStyle(maxTextLevel=0, maxTickLevel=1)
 
         self._loop_lines = [
             pg.InfiniteLine(angle=90, pen=pg.mkPen(theme.PEACH, width=1)) for _ in range(2)

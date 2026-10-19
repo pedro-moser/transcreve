@@ -46,8 +46,23 @@ class _FretNumbers(pg.GraphicsObject):
         self._notes = [n for n in notes if n.string is not None]
         self._onsets = np.array([n.onset * 1000 for n in self._notes])
         self._offsets = np.array([n.offset * 1000 for n in self._notes])
+        self._strings = np.array([n.string for n in self._notes], dtype=float)
         self._extent = float(self._offsets.max()) if len(self._offsets) else 1.0
         self._threshold = threshold
+        self.restyle()
+
+    def restyle(self):
+        """Text, sizes and colors per note, so that painting only draws."""
+        self._labels = [str(n.fret) for n in self._notes]
+        self._widths = [self._metrics.horizontalAdvance(t) + 6 for t in self._labels]
+        self._text_colors = [self._color(n) for n in self._notes]
+        self._line_pens = []
+        for color in self._text_colors:
+            line = pg.mkColor(theme.MAUVE)
+            line.setAlphaF(0.35 + 0.4 * color.alphaF())
+            self._line_pens.append(QPen(line, 3))
+        self._background = pg.mkColor(theme.MANTLE)
+        self._fixed_pen = QPen(pg.mkColor(theme.BLUE), 1)
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -76,29 +91,27 @@ class _FretNumbers(pg.GraphicsObject):
             return
         # The painter maps item to device coordinates already. (pyqtgraph's
         # deviceTransform() crashes on PySide6 6.11 with Python 3.14.)
-        transform = painter.transform()
-        background = pg.mkColor(theme.MANTLE)
-        line = pg.mkColor(theme.MAUVE)
+        t = painter.transform()
+        strings = self._strings[indices]
+        starts = t.m11() * self._onsets[indices] + t.m21() * strings + t.dx()
+        ends = t.m11() * self._offsets[indices] + t.m21() * strings + t.dx()
+        rows = t.m12() * self._onsets[indices] + t.m22() * strings + t.dy()
         height = self._metrics.height()
         painter.save()
         painter.resetTransform()
         painter.setFont(self._font)
-        for i in indices:
-            note = self._notes[i]
-            start = transform.map(QPointF(self._onsets[i], note.string))
-            end = transform.map(QPointF(self._offsets[i], note.string))
-            width = self.box_width_px(note.fret)
-            color = self._color(note)
-            line.setAlphaF(0.35 + 0.4 * color.alphaF())
-            painter.setPen(QPen(line, 3))
-            painter.drawLine(QPointF(start.x() + width / 2, start.y()), end)
-            box = QRectF(start.x() - width / 2, start.y() - height / 2, width, height)
-            painter.fillRect(box, background)
-            if note.fixed:
-                painter.setPen(QPen(pg.mkColor(theme.BLUE), 1))
+        for i, x, x_end, y in zip(indices.tolist(), starts.tolist(), ends.tolist(), rows.tolist()):
+            half = self._widths[i] / 2
+            if x_end > x + half:
+                painter.setPen(self._line_pens[i])
+                painter.drawLine(QPointF(x + half, y), QPointF(x_end, y))
+            box = QRectF(x - half, y - height / 2, 2 * half, height)
+            painter.fillRect(box, self._background)
+            if self._notes[i].fixed:
+                painter.setPen(self._fixed_pen)
                 painter.drawRoundedRect(box, 3, 3)
-            painter.setPen(color)
-            painter.drawText(box, Qt.AlignCenter, str(note.fret))
+            painter.setPen(self._text_colors[i])
+            painter.drawText(box, Qt.AlignCenter, self._labels[i])
         painter.restore()
 
     def note_at(self, ms: float, string: int, ms_per_px: float) -> fretting.TabNote | None:
@@ -156,7 +169,7 @@ class TabWidget(TimelinePlot):
 
     def refresh_theme(self):
         super().refresh_theme()
-        self._numbers.update()
+        self._numbers.restyle()
 
     # ── Public API ──────────────────────────────────────
 

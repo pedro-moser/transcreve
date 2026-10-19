@@ -1,13 +1,42 @@
+from collections import deque
 import threading
+from typing import NamedTuple
 
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 
 
 # seconds of audio to pre-stretch per chunk
 CHUNK_SECS = 20
+
+
+class _Block(NamedTuple):
+    """One block handed to the sound card, and when it will be heard."""
+
+    dac_time: float  # stream time when its first sample reaches the speakers
+    seconds: float  # how long it plays
+    first: float  # song frames it covers
+    last: float
+
+
+def heard_frame(blocks, now: float, fallback: float) -> float:
+    """Song frame reaching the speakers at stream time ``now``.
+
+    ``blocks`` are the latest blocks in the order they were written. Before
+    any of them is audible (right after play or a seek), the first one's
+    start is the best answer; without blocks or a stream clock, ``fallback``.
+    """
+    if not blocks or now <= 0:
+        return fallback
+    started = [b for b in blocks if b.dac_time <= now]
+    if not started:
+        return blocks[0].first
+    block = started[-1]
+    progress = min((now - block.dac_time) / block.seconds, 1.0) if block.seconds > 0 else 1.0
+    return block.first + (block.last - block.first) * progress
 
 
 class _StretchWorker(QObject):
@@ -98,8 +127,15 @@ class AudioService(QObject):
         # cue point
         self.cue_point: int | None = None
 
-        # position timer
+        # Sound leaves the speakers well after the callback writes it (~170 ms
+        # on PipeWire). The callback records each block's song frames and
+        # when it will be heard, so the playhead shows what is being heard
+        # and moves smoothly between callbacks.
+        self._blocks: deque[_Block] = deque(maxlen=16)
+
+        # position timer, at the screen's refresh rate while playing
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.setInterval(30)
         self._timer.timeout.connect(self._emit_position)
 
@@ -111,9 +147,19 @@ class AudioService(QObject):
 
     @property
     def position_ms(self) -> int:
+        """Position being heard while playing; the playback position otherwise."""
         if self._data is None:
             return 0
-        return int(self._pos / self._sr * 1000)
+        with self._lock:
+            pos = self._pos
+            blocks = list(self._blocks)
+        stream = self._stream
+        if self._playing and stream is not None and blocks:
+            try:
+                pos = heard_frame(blocks, stream.time, pos)
+            except sd.PortAudioError:
+                pass
+        return int(pos / self._sr * 1000)
 
     @property
     def duration_ms(self) -> int:
@@ -206,7 +252,7 @@ class AudioService(QObject):
 
         self._playing = True
         self._open_stream()
-        self._timer.start()
+        self._timer.start(self._frame_interval_ms())
         self.playing_changed.emit(True)
 
     def pause(self):
@@ -236,6 +282,7 @@ class AudioService(QObject):
         ms = max(0, min(ms, self.duration_ms))
         with self._lock:
             self._pos = ms / 1000.0 * self._sr
+            self._blocks.clear()
         self.position_changed.emit(ms)
 
     def seek_relative(self, delta_ms: int):
@@ -371,6 +418,15 @@ class AudioService(QObject):
             except Exception:
                 pass
             self._stream = None
+        with self._lock:
+            self._blocks.clear()
+
+    @staticmethod
+    def _frame_interval_ms() -> int:
+        """Timer interval for one position update per screen refresh."""
+        screen = QGuiApplication.primaryScreen()
+        rate = screen.refreshRate() if screen is not None else 60.0
+        return max(4, int(1000 / min(max(rate, 30.0), 240.0)))
 
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info, status):
         with self._lock:
@@ -400,6 +456,10 @@ class AudioService(QObject):
                     self._fill_interpolated(outdata, frames, pos, speed)
             else:
                 self._fill_interpolated(outdata, frames, pos, speed)
+
+            dac_time = time_info.outputBufferDacTime
+            if dac_time > 0:  # 0 when the host API cannot tell
+                self._blocks.append(_Block(dac_time, frames / self._sr, pos, self._pos))
 
     def _fill_direct(self, outdata: np.ndarray, frames: int, pos: float):
         """1.0x speed: direct copy."""
