@@ -1,7 +1,7 @@
-"""Guitar notes detected by Basic Pitch over the cached guitar stem.
+"""Notes detected by Basic Pitch over the cached stems.
 
-Detection runs once per song and is cached in ``analysis/{song_id}/``. The
-cache is keyed on the guitar stem file, the model checksum and the extraction
+Detection runs once per song and stem and is cached in ``analysis/{song_id}/``.
+The cache is keyed on the stem file, the model checksum and the extraction
 parameters, so a new separation (for example, promoting a song to "Alta
 qualidade") makes it stale.
 """
@@ -36,6 +36,15 @@ EXTRACTION = {
     "min_pitch": 40,  # E2, the low string in standard tuning
     "max_pitch": 88,  # E6
 }
+# Stems whose notes can be detected, and the MIDI range decoded from each.
+# EXTRACTION holds the guitar's; Basic Pitch covers A0 (21) to C8 (108).
+PITCH_RANGES = {
+    "guitar": (EXTRACTION["min_pitch"], EXTRACTION["max_pitch"]),
+    "bass": (28, 67),  # E1–G4: four strings, 24 frets
+    "piano": (21, 108),
+    "other": (21, 108),
+}
+NOTE_STEMS = tuple(PITCH_RANGES)
 # Recordings further than this from A440 are retuned before the model, so
 # their notes do not fall between semitones.
 TUNING_GATE_CENTS = 15.0
@@ -56,8 +65,14 @@ def is_available() -> bool:
     )
 
 
-def guitar_stem_path(song_id: str) -> Path:
-    return STEMS_CACHE_DIR / song_id / "guitar.npy"
+def extraction(stem: str) -> dict:
+    """Decoding parameters for ``stem``: EXTRACTION over the stem's range."""
+    low, high = PITCH_RANGES[stem]
+    return {**EXTRACTION, "min_pitch": low, "max_pitch": high}
+
+
+def stem_path(song_id: str, stem: str) -> Path:
+    return STEMS_CACHE_DIR / song_id / f"{stem}.npy"
 
 
 def stem_sample_rate(song_id: str) -> int | None:
@@ -69,13 +84,15 @@ def stem_sample_rate(song_id: str) -> int | None:
         return None
 
 
-def has_guitar_stem(song_id: str) -> bool:
-    """Whether a separation with a guitar stem is cached for ``song_id``."""
-    return guitar_stem_path(song_id).is_file() and stem_sample_rate(song_id) is not None
+def note_stems(song_id: str) -> list[str]:
+    """Cached stems of ``song_id`` whose notes can be detected, in NOTE_STEMS order."""
+    if stem_sample_rate(song_id) is None:
+        return []
+    return [stem for stem in NOTE_STEMS if stem_path(song_id, stem).is_file()]
 
 
 def detect_notes(
-    audio: np.ndarray, sr: int, session=None
+    audio: np.ndarray, sr: int, session=None, stem: str = "guitar"
 ) -> tuple[list[DetectedNote], float]:
     """Notes in ``audio`` (mono or (frames, channels)) and its tuning in cents."""
     import librosa
@@ -89,30 +106,33 @@ def detect_notes(
     act = bp.infer(mono, bp.SAMPLE_RATE / ratio, session)
     notes = [
         DetectedNote(n.onset / ratio, n.offset / ratio, n.pitch, n.score)
-        for n in bp.extract_notes(act, **EXTRACTION)
+        for n in bp.extract_notes(act, **extraction(stem))
     ]
     return notes, cents
 
 
-def cache_key(song_id: str) -> dict:
-    stat = guitar_stem_path(song_id).stat()
+def cache_key(song_id: str, stem: str) -> dict:
+    stat = stem_path(song_id, stem).stat()
     return {
         "version": CACHE_VERSION,
         "stem": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
         "model_sha256": bp.MODEL_SHA256,
-        "extraction": EXTRACTION,
+        "extraction": extraction(stem),
         "tuning_gate_cents": TUNING_GATE_CENTS,
     }
 
 
-def _cache_path(song_id: str) -> Path:
-    return CACHE_DIR / song_id / "notes.json"
+def _cache_path(song_id: str, stem: str) -> Path:
+    # The guitar keeps the name from when it was the only stem analyzed, so
+    # songs analyzed back then are not detected again.
+    name = "notes.json" if stem == "guitar" else f"notes-{stem}.json"
+    return CACHE_DIR / song_id / name
 
 
-def load_cached_notes(song_id: str, key: dict) -> list[DetectedNote] | None:
-    """Cached notes for ``song_id`` if they were detected under ``key``."""
+def load_cached_notes(song_id: str, stem: str, key: dict) -> list[DetectedNote] | None:
+    """Cached notes for ``stem`` of ``song_id`` if they were detected under ``key``."""
     try:
-        data = json.loads(_cache_path(song_id).read_text())
+        data = json.loads(_cache_path(song_id, stem).read_text())
         if data["key"] != key:
             return None
         return [
@@ -124,9 +144,9 @@ def load_cached_notes(song_id: str, key: dict) -> list[DetectedNote] | None:
 
 
 def save_cached_notes(
-    song_id: str, key: dict, tuning_cents: float, notes: list[DetectedNote]
+    song_id: str, stem: str, key: dict, tuning_cents: float, notes: list[DetectedNote]
 ):
-    path = _cache_path(song_id)
+    path = _cache_path(song_id, stem)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "key": key,
@@ -142,56 +162,59 @@ def save_cached_notes(
 
 
 class _DetectWorker(QObject):
-    progress = Signal(str, str)  # song_id, message
-    finished = Signal(str, object)  # song_id, list[DetectedNote]
-    error = Signal(str, str)  # song_id, message
+    progress = Signal(str, str, str)  # song_id, stem, message
+    finished = Signal(str, str, object)  # song_id, stem, list[DetectedNote]
+    error = Signal(str, str, str)  # song_id, stem, message
 
-    def __init__(self, song_id: str):
+    def __init__(self, song_id: str, stem: str):
         super().__init__()
         self._song_id = song_id
+        self._stem = stem
 
     def run(self):
+        song_id, stem = self._song_id, self._stem
         try:
-            key = cache_key(self._song_id)
-            notes = load_cached_notes(self._song_id, key)
+            key = cache_key(song_id, stem)
+            notes = load_cached_notes(song_id, stem, key)
             if notes is None:
-                self.progress.emit(self._song_id, "Detectando notas...")
-                sr = stem_sample_rate(self._song_id)
+                self.progress.emit(song_id, stem, "Detectando notas...")
+                sr = stem_sample_rate(song_id)
                 if sr is None:
                     raise ValueError("O cache de stems não informa a taxa de amostragem")
-                stem = np.load(guitar_stem_path(self._song_id), mmap_mode="r")
-                notes, cents = detect_notes(stem, sr, bp.load_session())
-                save_cached_notes(self._song_id, key, cents, notes)
-            self.finished.emit(self._song_id, notes)
+                audio = np.load(stem_path(song_id, stem), mmap_mode="r")
+                notes, cents = detect_notes(audio, sr, bp.load_session(), stem)
+                save_cached_notes(song_id, stem, key, cents, notes)
+            self.finished.emit(song_id, stem, notes)
         except Exception as e:
-            self.error.emit(self._song_id, str(e))
+            self.error.emit(song_id, stem, str(e))
 
 
 class NoteDetectionService(QObject):
-    progress = Signal(str, str)  # song_id, message
-    finished = Signal(str, object)  # song_id, list[DetectedNote]
-    error = Signal(str, str)  # song_id, message
+    progress = Signal(str, str, str)  # song_id, stem, message
+    finished = Signal(str, str, object)  # song_id, stem, list[DetectedNote]
+    error = Signal(str, str, str)  # song_id, stem, message
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread: QThread | None = None
         self._worker: _DetectWorker | None = None
-        # Song requested while another was being detected; the latest wins.
-        self._pending: str | None = None
+        # (song_id, stem) requested while another was being detected; the
+        # latest wins.
+        self._pending: tuple[str, str] | None = None
 
     @property
     def is_processing(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
-    def detect(self, song_id: str):
-        """Load the cached notes for ``song_id``, or detect them."""
+    def detect(self, song_id: str, stem: str):
+        """Load the cached notes for ``stem`` of ``song_id``, or detect them."""
         if self.is_processing:
-            # Even for the running song: its stems may have changed since the
-            # run started, and a second run is a cache hit if they did not.
-            self._pending = song_id
+            # Even for the running song and stem: its stems may have changed
+            # since the run started, and a second run is a cache hit if not.
+            self._pending = (song_id, stem)
             return
         self._thread = QThread()
-        self._worker = _DetectWorker(song_id)
+        self._worker = _DetectWorker(song_id, stem)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress.emit)
@@ -199,20 +222,20 @@ class NoteDetectionService(QObject):
         self._worker.error.connect(self._on_error)
         self._thread.start()
 
-    def _on_finished(self, song_id: str, notes: list):
+    def _on_finished(self, song_id: str, stem: str, notes: list):
         self._cleanup()
-        self.finished.emit(song_id, notes)
+        self.finished.emit(song_id, stem, notes)
         self._start_pending()
 
-    def _on_error(self, song_id: str, msg: str):
+    def _on_error(self, song_id: str, stem: str, msg: str):
         self._cleanup()
-        self.error.emit(song_id, msg)
+        self.error.emit(song_id, stem, msg)
         self._start_pending()
 
     def _start_pending(self):
         if self._pending is not None:
-            song_id, self._pending = self._pending, None
-            self.detect(song_id)
+            pending, self._pending = self._pending, None
+            self.detect(*pending)
 
     def _cleanup(self):
         if self._thread:

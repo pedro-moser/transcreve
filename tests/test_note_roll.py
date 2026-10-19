@@ -126,7 +126,7 @@ class PlayerNotesTests(unittest.TestCase):
                 np.save(cache / f"{name}.npy", np.zeros((10, 2), np.float32))
             (cache / "metadata.json").write_text(json.dumps({"sample_rate": 44_100}))
         self.screen._song = song
-        self.screen._notes_song_id = None
+        self.screen._notes_source = None
         self.screen._refresh_notes_ui()
         return song
 
@@ -134,10 +134,19 @@ class PlayerNotesTests(unittest.TestCase):
         song = self.open_song(stems=["guitar"])
         self.assertFalse(self.screen._btn_notes.isHidden())
         self.assertFalse(self.screen._notes_area.isHidden())
-        self.detect.assert_called_once_with(song.id)
+        self.detect.assert_called_once_with(song.id, "guitar")
 
-    def test_notes_are_not_offered_without_a_guitar_stem(self):
-        self.open_song(stems=["vocals", "drums", "bass", "other"])
+    def test_a_four_stem_song_offers_the_notes_of_bass_and_other(self):
+        song = self.open_song(stems=["vocals", "drums", "bass", "other"])
+        self.assertFalse(self.screen._notes_area.isHidden())
+        offered = [s for s, b in self.screen._notes_stem_buttons.items() if not b.isHidden()]
+        self.assertEqual(offered, ["bass", "other"])
+        # Without a guitar stem, the first one; the preference stays.
+        self.detect.assert_called_once_with(song.id, "bass")
+        self.assertIsNone(app_settings.load_setting("notes_stem"))
+
+    def test_notes_are_not_offered_without_stems(self):
+        self.open_song(stems=["vocals", "drums"])
         self.assertTrue(self.screen._btn_notes.isHidden())
         self.assertTrue(self.screen._notes_area.isHidden())
         self.detect.assert_not_called()
@@ -152,9 +161,9 @@ class PlayerNotesTests(unittest.TestCase):
 
     def test_notes_for_another_song_are_ignored(self):
         song = self.open_song(stems=["guitar"])
-        self.screen._on_notes_finished("another-song", NOTES)
+        self.screen._on_notes_finished("another-song", "guitar", NOTES)
         self.assertEqual(self.screen._note_roll.visible_note_count, 0)
-        self.screen._on_notes_finished(song.id, NOTES)
+        self.screen._on_notes_finished(song.id, "guitar", NOTES)
         self.assertEqual(self.screen._note_roll.visible_note_count, 2)
         self.assertEqual(self.screen._notes_status.text(), "2 notas")
 

@@ -15,7 +15,12 @@ FULL_OPACITY_SCORE = 0.8
 class _StringAxis(pg.AxisItem):
     def __init__(self):
         super().__init__("left")
-        self.names = fretting.string_names()
+        self.names: list[str] = []
+
+    def set_names(self, names: list[str]):
+        self.names = names
+        self.picture = None
+        self.update()
 
     def tickValues(self, minVal, maxVal, size):
         return [(1, list(range(1, len(self.names) + 1)))]
@@ -35,6 +40,7 @@ class _FretNumbers(pg.GraphicsObject):
         self._onsets = np.zeros(0)
         self._offsets = np.zeros(0)
         self._extent = 1.0
+        self._string_count = 6
         self._threshold = 0.0
         self._font = QFont()
         self._font.setPixelSize(self.FONT_PX)
@@ -51,6 +57,10 @@ class _FretNumbers(pg.GraphicsObject):
         self._threshold = threshold
         self.restyle()
 
+    def set_string_count(self, count: int):
+        self.prepareGeometryChange()
+        self._string_count = count
+
     def restyle(self):
         """Text, sizes and colors per note, so that painting only draws."""
         self._labels = [str(n.fret) for n in self._notes]
@@ -66,7 +76,7 @@ class _FretNumbers(pg.GraphicsObject):
         self.update()
 
     def boundingRect(self) -> QRectF:
-        return QRectF(0, 0.5, self._extent, 6)
+        return QRectF(0, 0.5, self._extent, self._string_count)
 
     def box_width_px(self, fret: int) -> float:
         return self._metrics.horizontalAdvance(str(fret)) + 6
@@ -132,7 +142,8 @@ class _FretNumbers(pg.GraphicsObject):
 class TabWidget(TimelinePlot):
     """Tab of detected notes on a real time axis, without rhythm or bars.
 
-    Clicking a number offers the other places that note can be played.
+    Draws one line per string of the tuning, guitar by default. Clicking a
+    number offers the other places that note can be played.
     """
 
     position_chosen = Signal(object, int)  # TabNote, string
@@ -142,15 +153,6 @@ class TabWidget(TimelinePlot):
         super().__init__(_StringAxis(), parent)
         vb = self.getViewBox()
         vb.invertY(True)
-        self.setYRange(0.4, 6.6, padding=0)
-
-        self._string_lines = [
-            pg.InfiniteLine(pos=s, angle=0, pen=pg.mkPen(theme.SURFACE1, width=1))
-            for s in range(1, 7)
-        ]
-        for line in self._string_lines:
-            line.setZValue(-10)
-            self.addItem(line)
 
         self._numbers = _FretNumbers()
         self._numbers.setZValue(5)
@@ -158,6 +160,9 @@ class TabWidget(TimelinePlot):
         vb.sigXRangeChanged.connect(lambda *_: self._numbers.update())
 
         self._notes: list[fretting.TabNote] = []
+        self._tuning: tuple[int, ...] = ()
+        self._string_lines: list[pg.InfiniteLine] = []
+        self.set_tuning(fretting.STANDARD_TUNING)
         self.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._apply_theme()
         self._update_range()
@@ -173,6 +178,33 @@ class TabWidget(TimelinePlot):
 
     # ── Public API ──────────────────────────────────────
 
+    @property
+    def tuning(self) -> tuple[int, ...]:
+        return self._tuning
+
+    def set_tuning(self, tuning):
+        """Show the strings of ``tuning`` (open pitches from string 1).
+
+        Notes placed for other strings are cleared.
+        """
+        tuning = tuple(tuning)
+        if tuning == self._tuning:
+            return
+        self._tuning = tuning
+        for line in self._string_lines:
+            self.removeItem(line)
+        self._string_lines = [
+            pg.InfiniteLine(pos=s, angle=0, pen=pg.mkPen(theme.SURFACE1, width=1))
+            for s in range(1, len(tuning) + 1)
+        ]
+        for line in self._string_lines:
+            line.setZValue(-10)
+            self.addItem(line)
+        self.getPlotItem().getAxis("left").set_names(fretting.string_names(tuning))
+        self._numbers.set_string_count(len(tuning))
+        self.setYRange(0.4, len(tuning) + 0.6, padding=0)
+        self.clear_notes()
+
     def set_notes(self, notes: list[fretting.TabNote], threshold: float = 0.0):
         self._notes = notes
         self._numbers.set_notes(notes, threshold)
@@ -186,13 +218,12 @@ class TabWidget(TimelinePlot):
 
     def note_at(self, ms: float, y: float) -> fretting.TabNote | None:
         string = int(round(y))
-        if not 1 <= string <= 6:
+        if not 1 <= string <= len(self._tuning):
             return None
         return self._numbers.note_at(ms, string, self._ms_per_pixel())
 
-    @staticmethod
-    def alternatives(note: fretting.TabNote) -> list[fretting.Position]:
-        return fretting.positions(note.pitch)
+    def alternatives(self, note: fretting.TabNote) -> list[fretting.Position]:
+        return fretting.positions(note.pitch, self._tuning)
 
     # ── Mouse ───────────────────────────────────────────
 
@@ -214,7 +245,7 @@ class TabWidget(TimelinePlot):
         super().mousePressEvent(event)
 
     def _open_menu(self, note: fretting.TabNote, global_pos):
-        names = fretting.string_names()
+        names = fretting.string_names(self._tuning)
         menu = QMenu(self)
         menu.addSection(note_name(note.pitch))
         for position in self.alternatives(note):

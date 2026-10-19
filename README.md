@@ -13,7 +13,7 @@ Ferramenta desktop para transcrição e estudo musical, desenvolvida em Python c
 - Atalhos de teclado com guia dentro do player
 - Persistência local em SQLite
 - Detecção de acordes e separação de instrumentos na instalação completa
-- Notas da guitarra detectadas no stem separado, em tab (com correção da posição de cada nota) ou piano-roll, acompanhando a reprodução e o loop
+- Notas detectadas nos stems de guitarra, baixo, piano e outros, em piano-roll ou em tab de guitarra ou de baixo (com correção da posição de cada nota), acompanhando a reprodução e o loop
 
 ## Antes de começar
 

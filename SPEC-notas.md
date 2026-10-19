@@ -118,7 +118,7 @@ Cada faixa pode ser ligada ou desligada. Abaixo de uma densidade mínima de px/s
 - Slider de limiar (filtra por `p`).
 - Liga/desliga das faixas e alternância CQT/posteriorgrama.
 - Tonalidade (tônica + modo), afinação e capotraste.
-- Atalhos novos não podem usar Espaço, setas, `[`, `]`, A, B, C, D, L e M, que já estão em uso.
+- Atalhos novos não podem usar Espaço, setas, `[`, `]`, A, B, C, D, I, L, M, N e T, que já estão em uso.
 
 ## Grafia e tonalidade
 
@@ -156,7 +156,7 @@ O instrumento é definido pelo intervalo de transposição como par (passos de l
 - A escolha enarmônica da armadura troca o intervalo por um enarmônico de mesmos semitons. Com concert E maior no instrumento em Bb, fica F# maior por 2ª maior (1, 2) ou Gb maior por 3ª diminuta (2, 2). O G# concert vira A# no primeiro caso e Bb no segundo. Aplicada a todas as notas, essa regra é a que concilia "preservar a grafia" com "escolher Gb".
 - Se a transposição passar de dois acidentes (B## + 2ª maior = C###), a nota é reescrita na enarmônica com menos acidentes.
 - A extensão escrita de cada instrumento decide clave e 8va.
-- A tab não muda com o instrumento: é sempre da guitarra.
+- A tab não muda com o instrumento transpositor: continua sendo a do stem (guitarra ou baixo).
 
 ## Fase 0: validação
 
@@ -203,7 +203,7 @@ O instrumento é definido pelo intervalo de transposição como par (passos de l
 
 - Quantização rítmica, compassos e figuras rítmicas.
 - Exportação para Guitar Pro ou PDF.
-- Transcrição de outros instrumentos além da guitarra.
+- Partitura e grafia para outros stems além da guitarra. Baixo, piano e outros têm só piano-roll e tab (ver Decisões, item 6).
 - Articulações (bend, slide, vibrato, hammer-on). O contour fica guardado; até lá, um slide aparece como sequência de notas curtas.
 - Separação de vozes e mais de uma guitarra no mesmo stem.
 
@@ -221,3 +221,7 @@ O instrumento é definido pelo intervalo de transposição como par (passos de l
    - **Eventos:** onsets encadeados a até 50 ms um do outro, com no máximo 120 ms, e a mesma nota duas vezes no evento vira uma. Fragmentos em eventos diferentes não são emendados, porque engoliriam notas repetidas.
    - **Correção:** clicar num número oferece as outras posições. A escolha vira restrição dura, guardada em `note_edits` (`kind = 'posicao'`, âncora em pitch + onset ±50 ms). Numa mesma corda do mesmo acorde, a correção mais nova vence; as órfãs aparecem na contagem.
    - **Afinação:** E padrão fixo, sem capotraste.
+6. **Notas de outros stems** (19 out 2026, pedido do Pedro). Os botões ao lado de "Notas" (atalho I) trocam o stem analisado entre guitarra, baixo, piano e outros, entre os que estiverem no cache; um cache antigo de 4 stems oferece baixo e outros. A escolha fica salva, e uma música sem o stem escolhido mostra o primeiro disponível.
+   - **Faixa decodificada:** guitarra E2–E6 (40–88), como antes; baixo E1–G4 (28–67), 4 cordas e 24 casas; piano e outros A0–C8 (21–108), a faixa inteira do Basic Pitch. Os demais parâmetros de extração são os mesmos da guitarra, sem validação própria.
+   - **Vistas:** baixo tem tab de 4 cordas (G D A E), com o mesmo Viterbi de mão parada da guitarra; piano só piano-roll; outros têm tab de guitarra com as notas que cabem nela, e as que não cabem aparecem como "fora da extensão".
+   - **Cache e edições por stem:** `notes-{stem}.json` e `kind = 'posicao:{stem}'`. A guitarra mantém `notes.json` e `kind = 'posicao'`, para não redetectar as músicas já analisadas nem perder as posições fixadas.

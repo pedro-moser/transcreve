@@ -10,4 +10,4 @@ class PositionFix(NamedTuple):
 
     pitch: int  # MIDI, sounding
     onset: float  # seconds, onset of the note when it was fixed
-    string: int  # 1 = high e, as in tab
+    string: int  # 1 = the highest string, as in tab

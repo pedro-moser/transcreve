@@ -64,19 +64,31 @@ class TempDirsTestCase(unittest.TestCase):
 class StemAvailabilityTests(TempDirsTestCase):
     def test_guitar_stem_with_rate_metadata_is_available(self):
         self.write_stems()
-        self.assertTrue(nd.has_guitar_stem(SONG_ID))
+        self.assertEqual(nd.note_stems(SONG_ID), ["guitar"])
         self.assertEqual(nd.stem_sample_rate(SONG_ID), 44_100)
 
-    def test_four_stem_cache_has_no_guitar(self):
+    def test_six_stem_cache_offers_every_instrument_but_vocals_and_drums(self):
+        self.write_stems(names=("vocals", "drums", "bass", "guitar", "piano", "other"))
+        self.assertEqual(nd.note_stems(SONG_ID), ["guitar", "bass", "piano", "other"])
+
+    def test_four_stem_cache_offers_bass_and_other(self):
         self.write_stems(names=("vocals", "drums", "bass", "other"))
-        self.assertFalse(nd.has_guitar_stem(SONG_ID))
+        self.assertEqual(nd.note_stems(SONG_ID), ["bass", "other"])
 
     def test_cache_without_rate_metadata_is_not_used(self):
         self.write_stems(metadata=False)
-        self.assertFalse(nd.has_guitar_stem(SONG_ID))
+        self.assertEqual(nd.note_stems(SONG_ID), [])
 
-    def test_missing_song_has_no_guitar(self):
-        self.assertFalse(nd.has_guitar_stem("other-song"))
+    def test_missing_song_has_no_stems(self):
+        self.assertEqual(nd.note_stems("other-song"), [])
+
+    def test_each_stem_decodes_its_own_range(self):
+        self.assertEqual(nd.extraction("guitar"), nd.EXTRACTION)
+        bass = nd.extraction("bass")
+        self.assertEqual((bass["min_pitch"], bass["max_pitch"]), (28, 67))
+        self.assertEqual(bass["min_frames"], nd.EXTRACTION["min_frames"])
+        piano = nd.extraction("piano")
+        self.assertEqual((piano["min_pitch"], piano["max_pitch"]), (21, 108))
 
 
 class NotesCacheTests(TempDirsTestCase):
@@ -84,31 +96,69 @@ class NotesCacheTests(TempDirsTestCase):
 
     def setUp(self):
         super().setUp()
-        self.write_stems()
+        self.write_stems(names=("guitar", "bass"))
 
     def test_cached_notes_round_trip(self):
-        key = nd.cache_key(SONG_ID)
-        nd.save_cached_notes(SONG_ID, key, 3.0, self.NOTES)
-        self.assertEqual(nd.load_cached_notes(SONG_ID, nd.cache_key(SONG_ID)), self.NOTES)
+        key = nd.cache_key(SONG_ID, "guitar")
+        nd.save_cached_notes(SONG_ID, "guitar", key, 3.0, self.NOTES)
+        self.assertEqual(
+            nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar")), self.NOTES
+        )
+
+    def test_guitar_notes_detected_before_other_stems_stay_cached(self):
+        # The cache of the guitar-only version: notes.json, keyed on EXTRACTION.
+        stat = nd.stem_path(SONG_ID, "guitar").stat()
+        key = {
+            "version": nd.CACHE_VERSION,
+            "stem": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+            "model_sha256": nd.bp.MODEL_SHA256,
+            "extraction": dict(nd.EXTRACTION),
+            "tuning_gate_cents": nd.TUNING_GATE_CENTS,
+        }
+        nd.save_cached_notes(SONG_ID, "guitar", key, 0.0, self.NOTES)
+        self.assertTrue((self.analysis_dir / SONG_ID / "notes.json").is_file())
+        self.assertEqual(
+            nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar")), self.NOTES
+        )
+
+    def test_each_stem_has_its_own_cache(self):
+        nd.save_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar"), 0.0, self.NOTES)
+        self.assertIsNone(nd.load_cached_notes(SONG_ID, "bass", nd.cache_key(SONG_ID, "bass")))
+        bass_notes = self.NOTES[:1]
+        nd.save_cached_notes(SONG_ID, "bass", nd.cache_key(SONG_ID, "bass"), 0.0, bass_notes)
+        self.assertEqual(
+            nd.load_cached_notes(SONG_ID, "bass", nd.cache_key(SONG_ID, "bass")), bass_notes
+        )
+        self.assertEqual(
+            nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar")), self.NOTES
+        )
 
     def test_new_guitar_stem_makes_cached_notes_stale(self):
-        nd.save_cached_notes(SONG_ID, nd.cache_key(SONG_ID), 0.0, self.NOTES)
-        stem = nd.guitar_stem_path(SONG_ID)
+        nd.save_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar"), 0.0, self.NOTES)
+        stem = nd.stem_path(SONG_ID, "guitar")
         before = stem.stat().st_mtime_ns
         self.write_stems()
         os.utime(stem, ns=(before + 1_000_000, before + 1_000_000))
-        self.assertIsNone(nd.load_cached_notes(SONG_ID, nd.cache_key(SONG_ID)))
+        self.assertIsNone(
+            nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar"))
+        )
 
     def test_new_extraction_parameters_make_cached_notes_stale(self):
-        nd.save_cached_notes(SONG_ID, nd.cache_key(SONG_ID), 0.0, self.NOTES)
+        for stem in ("guitar", "bass"):
+            nd.save_cached_notes(SONG_ID, stem, nd.cache_key(SONG_ID, stem), 0.0, self.NOTES)
         with patch.dict(nd.EXTRACTION, {"min_frames": 11}):
-            self.assertIsNone(nd.load_cached_notes(SONG_ID, nd.cache_key(SONG_ID)))
+            for stem in ("guitar", "bass"):
+                self.assertIsNone(
+                    nd.load_cached_notes(SONG_ID, stem, nd.cache_key(SONG_ID, stem)), stem
+                )
 
     def test_unreadable_cache_is_a_miss(self):
         path = self.analysis_dir / SONG_ID / "notes.json"
         path.parent.mkdir(parents=True)
         path.write_text("{")
-        self.assertIsNone(nd.load_cached_notes(SONG_ID, nd.cache_key(SONG_ID)))
+        self.assertIsNone(
+            nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar"))
+        )
 
 
 @unittest.skipUnless(HAS_ONNXRUNTIME, "onnxruntime não instalado")
@@ -125,6 +175,14 @@ class DetectionTests(TempDirsTestCase):
         notes, _ = nd.detect_notes(audio, 22_050, self.session)
         found = {n.pitch for n in notes if abs(n.onset - 1.0) < 0.06}
         self.assertTrue({59, 60, 62} <= found, found)
+
+    def test_bass_range_reaches_below_the_guitar(self):
+        # A1 sits below the guitar's low E: only the bass decodes it.
+        audio = render(3.0, [(1.0, 33)], 22_050)
+        bass, _ = nd.detect_notes(audio, 22_050, self.session, "bass")
+        guitar, _ = nd.detect_notes(audio, 22_050, self.session, "guitar")
+        self.assertIn(33, {n.pitch for n in bass if abs(n.onset - 1.0) < 0.06})
+        self.assertNotIn(33, {n.pitch for n in guitar})
 
     def test_sharp_recording_is_retuned_in_song_time(self):
         # 40 cents sharp: the model input is slowed down to reach A440, so
@@ -145,11 +203,13 @@ class DetectionTests(TempDirsTestCase):
 
         def run_worker():
             results = []
-            worker = nd._DetectWorker(SONG_ID)
-            worker.finished.connect(lambda song_id, notes: results.append((song_id, notes)))
-            worker.error.connect(lambda song_id, msg: self.fail(msg))
+            worker = nd._DetectWorker(SONG_ID, "guitar")
+            worker.finished.connect(
+                lambda song_id, stem, notes: results.append((song_id, stem, notes))
+            )
+            worker.error.connect(lambda song_id, stem, msg: self.fail(msg))
             worker.run()
-            return results
+            return [(song_id, notes) for song_id, stem, notes in results if stem == "guitar"]
 
         [(song_id, notes)] = run_worker()
         self.assertEqual(song_id, SONG_ID)

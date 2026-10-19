@@ -36,7 +36,8 @@ class StorageService:
             );
             -- User edits to detected notes (SPEC-notas.md, modelo de dados),
             -- anchored on pitch and onset so they survive re-analysis.
-            -- kind 'posicao': data = {"string": n}.
+            -- kind 'posicao': data = {"string": n}. Edits to a stem other
+            -- than the guitar carry it in the kind, as in 'posicao:bass'.
             CREATE TABLE IF NOT EXISTS note_edits (
                 song_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
@@ -85,29 +86,36 @@ class StorageService:
         self._conn.execute("DELETE FROM note_edits WHERE song_id = ?", (song_id,))
         self._conn.commit()
 
-    def get_position_fixes(self, song_id: str) -> list[PositionFix]:
+    @staticmethod
+    def _edit_kind(kind: str, stem: str) -> str:
+        # The guitar's edits keep the kind they had when it was the only stem.
+        return kind if stem == "guitar" else f"{kind}:{stem}"
+
+    def get_position_fixes(self, song_id: str, stem: str) -> list[PositionFix]:
         rows = self._conn.execute(
             """SELECT pitch, onset_ms, data FROM note_edits
-               WHERE song_id = ? AND kind = 'posicao' ORDER BY onset_ms, pitch""",
-            (song_id,),
+               WHERE song_id = ? AND kind = ? ORDER BY onset_ms, pitch""",
+            (song_id, self._edit_kind("posicao", stem)),
         ).fetchall()
         return [
             PositionFix(row["pitch"], row["onset_ms"] / 1000, json.loads(row["data"])["string"])
             for row in rows
         ]
 
-    def set_position_fixes(self, song_id: str, fixes: list[PositionFix]):
-        """Replace every fixed position of ``song_id``."""
+    def set_position_fixes(self, song_id: str, stem: str, fixes: list[PositionFix]):
+        """Replace every fixed position in ``stem`` of ``song_id``."""
+        kind = self._edit_kind("posicao", stem)
         with self._conn:
             self._conn.execute(
-                "DELETE FROM note_edits WHERE song_id = ? AND kind = 'posicao'",
-                (song_id,),
+                "DELETE FROM note_edits WHERE song_id = ? AND kind = ?",
+                (song_id, kind),
             )
             self._conn.executemany(
                 """INSERT OR REPLACE INTO note_edits (song_id, kind, pitch, onset_ms, data)
-                   VALUES (?, 'posicao', ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?)""",
                 [
-                    (song_id, fix.pitch, round(fix.onset * 1000), json.dumps({"string": fix.string}))
+                    (song_id, kind, fix.pitch, round(fix.onset * 1000),
+                     json.dumps({"string": fix.string}))
                     for fix in fixes
                 ],
             )

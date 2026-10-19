@@ -16,6 +16,7 @@ from models.position_fix import PositionFix
 from services.chord_service import NOTE_NAMES
 
 STANDARD_TUNING = (64, 59, 55, 50, 45, 40)  # open strings, 1 (high e) to 6
+BASS_TUNING = (43, 38, 33, 28)  # four-string bass, 1 (G) to 4 (low E)
 MAX_FRET = 20
 MAX_SPAN = 4  # frets between the lowest and highest fretted note of a chord
 EVENT_WINDOW = 0.05  # s; a note starting this soon after another joins its strum
@@ -43,7 +44,7 @@ LEAVE_OUT_COST = 10.0
 
 
 class Position(NamedTuple):
-    string: int  # 1 = high e
+    string: int  # 1 = the highest string
     fret: int
 
 
@@ -52,7 +53,7 @@ class TabNote(NamedTuple):
     offset: float
     pitch: int
     score: float
-    string: int | None  # None when the pitch is out of the guitar's range
+    string: int | None  # None when the pitch is out of the instrument's range
     fret: int | None
     playable: bool  # False when the note does not fit its event's fingering
     fixed: bool  # string chosen by the user
@@ -138,11 +139,11 @@ class _Event:
                 fixed[i] = fix.string
         self.all_notes = notes
         self.fixed = fixed
-        # Out-of-range notes never enter the search; at most six notes do.
+        # Out-of-range notes never enter the search; at most one per string does.
         playable = [i for i, n in enumerate(notes) if positions(n.pitch, tuning)]
         playable.sort(key=lambda i: (i not in fixed, -notes[i].score))
-        self.dropped = set(playable[6:])
-        self.members = playable[:6]
+        self.dropped = set(playable[len(tuning):])
+        self.members = playable[:len(tuning)]
         self.tuning = tuning
         self.fingerings = self._search()
         self._states()
@@ -233,7 +234,7 @@ class _Event:
 
 def _ringing(event: _Event, fingering: _Fingering, at: float) -> np.ndarray:
     """Pitch still sounding on each string at time ``at``, or -1."""
-    ringing = np.full(6, -1)
+    ringing = np.full(len(event.tuning), -1)
     for i, string in zip(fingering.notes, fingering.strings):
         if event.all_notes[i].offset > at + EVENT_WINDOW:
             ringing[string - 1] = event.all_notes[i].pitch
@@ -241,7 +242,7 @@ def _ringing(event: _Event, fingering: _Fingering, at: float) -> np.ndarray:
 
 
 def _played(event: _Event, fingering: _Fingering) -> np.ndarray:
-    played = np.full(6, -1)
+    played = np.full(len(event.tuning), -1)
     for i, string in zip(fingering.notes, fingering.strings):
         played[string - 1] = event.all_notes[i].pitch
     return played
@@ -310,7 +311,7 @@ def assign_positions(notes, fixes: Sequence[PositionFix] = (),
 
 
 def string_names(tuning: Sequence[int] = STANDARD_TUNING) -> list[str]:
-    """Tab labels from string 1 down: e B G D A E in standard tuning."""
+    """Tab labels from string 1 down: e B G D A E in standard tuning, G D A E on bass."""
     names = [NOTE_NAMES[p % 12] for p in tuning]
     lowest = min(range(len(tuning)), key=lambda i: tuning[i])
     return [n.lower() if i == 0 and n == names[lowest] else n for i, n in enumerate(names)]

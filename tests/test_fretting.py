@@ -130,6 +130,34 @@ class AssignmentTests(unittest.TestCase):
         self.assertTrue(all(t.fixed for t in tab))
 
 
+class BassTests(unittest.TestCase):
+    E1, A1, C2, D2, E2, G2 = 28, 33, 36, 38, 40, 43
+    BASS = fretting.BASS_TUNING
+
+    def test_strings_are_named_from_g_down(self):
+        self.assertEqual(fretting.string_names(self.BASS), ["G", "D", "A", "E"])
+
+    def test_low_e_is_the_open_fourth_string(self):
+        [t] = fretting.assign_positions([note(1.0, self.E1)], tuning=self.BASS)
+        self.assertEqual((t.string, t.fret, t.playable), (4, 0, True))
+        self.assertEqual(fretting.positions(self.G2 + fretting.MAX_FRET + 1, self.BASS), [])
+
+    def test_a_line_fits_one_hand_on_four_strings(self):
+        pitches = (self.A1, self.C2, self.D2, self.E2, self.G2)
+        notes = [note(1.0 + 0.5 * i, p) for i, p in enumerate(pitches)]
+        tab = fretting.assign_positions(notes, tuning=self.BASS)
+        self.assertTrue(all(t.playable and 1 <= t.string <= 4 for t in tab))
+        frets = [t.fret for t in tab if t.fret > 0]
+        self.assertLessEqual(max(frets) - min(frets), fretting.MAX_SPAN)
+
+    def test_more_than_four_notes_keep_the_four_strongest(self):
+        pitches = (self.E1, self.A1, self.D2, self.G2, C3)
+        notes = [note(1.0 + 0.005 * i, p, score=0.9 - 0.05 * i) for i, p in enumerate(pitches)]
+        tab = by_pitch(fretting.assign_positions(notes, tuning=self.BASS))
+        self.assertFalse(tab[C3].playable)
+        self.assertEqual(sum(t.playable for t in tab.values()), 4)
+
+
 class OrphanTests(unittest.TestCase):
     def test_orphans_are_fixes_without_a_note_or_a_valid_string(self):
         notes = [note(1.0, C4)]

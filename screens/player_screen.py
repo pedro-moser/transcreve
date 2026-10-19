@@ -37,9 +37,10 @@ from services.separation_service import (
     SeparationService,
 )
 from services.note_detection_service import (
+    NOTE_STEMS,
     NoteDetectionService,
-    has_guitar_stem,
     is_available as notes_available,
+    note_stems,
 )
 from services.storage_service import StorageService
 from widgets.note_roll_widget import NoteRollWidget
@@ -78,11 +79,29 @@ class PlayerScreen(QWidget):
                 ("C", "C", "Definir cue point"),
                 ("M", "M", "Adicionar seção"),
                 ("D", "D", "Detectar acorde na posição atual"),
-                ("N", "N", "Mostrar / ocultar notas da guitarra"),
+                ("N", "N", "Mostrar / ocultar notas detectadas"),
+                ("I", "I", "Alternar instrumento das notas"),
                 ("T", "T", "Alternar tab / piano-roll"),
             ],
         ),
     ]
+
+    STEM_ICONS = {
+        "vocals": "🎤",
+        "drums": "🥁",
+        "bass": "🔊",
+        "guitar": "🎸",
+        "piano": "🎹",
+        "other": "🎺",
+    }
+    # Tab tuning for the notes of each stem in NOTE_STEMS. The piano has only
+    # the piano-roll; "other" gets a guitar tab of the notes that fit it.
+    TAB_TUNINGS = {
+        "guitar": fretting.STANDARD_TUNING,
+        "bass": fretting.BASS_TUNING,
+        "piano": None,
+        "other": fretting.STANDARD_TUNING,
+    }
 
     def __init__(self, storage: StorageService, parent=None):
         super().__init__(parent)
@@ -98,8 +117,11 @@ class PlayerScreen(QWidget):
         self._notes.finished.connect(self._on_notes_finished)
         self._notes.error.connect(self._on_notes_error)
         self._notes_supported = notes_available()
-        # Song whose notes were last requested, so they load once per song.
-        self._notes_song_id: str | None = None
+        # Song and stem whose notes were last requested, so they load once.
+        self._notes_source: tuple[str, str] | None = None
+        # Stem whose notes are shown, and the one the user chose last; a
+        # song without that stem shows another.
+        self._notes_stem = self._preferred_notes_stem = load_setting("notes_stem", "guitar")
         # Its detected notes, before the threshold, and the positions the
         # user fixed for them.
         self._detected_notes: list = []
@@ -363,16 +385,8 @@ class PlayerScreen(QWidget):
         stems_layout.addStretch()
 
         self._stem_buttons: dict[str, QPushButton] = {}
-        stem_icons = {
-            "vocals": "🎤",
-            "drums": "🥁",
-            "bass": "🔊",
-            "guitar": "🎸",
-            "piano": "🎹",
-            "other": "🎺",
-        }
         for name in STEMS:
-            btn = QPushButton(f"{stem_icons[name]} {name.capitalize()}")
+            btn = QPushButton(f"{self.STEM_ICONS[name]} {name.capitalize()}")
             btn.setFixedHeight(28)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setCheckable(True)
@@ -390,9 +404,9 @@ class PlayerScreen(QWidget):
         stems_layout.addWidget(self._btn_unsolo)
 
         self._btn_notes = QPushButton("🎼 Ver notas")
-        self._btn_notes.setAccessibleName("Mostrar ou ocultar as notas da guitarra")
+        self._btn_notes.setAccessibleName("Mostrar ou ocultar as notas detectadas")
         self._btn_notes.setAccessibleDescription("Atalho N")
-        self._btn_notes.setToolTip("N · mostrar as notas detectadas no stem de guitarra")
+        self._btn_notes.setToolTip("N · mostrar as notas detectadas nos stems")
         self._btn_notes.setFixedHeight(28)
         self._btn_notes.setCursor(Qt.PointingHandCursor)
         self._btn_notes.setCheckable(True)
@@ -413,9 +427,24 @@ class PlayerScreen(QWidget):
         na_layout.setSpacing(4)
 
         na_header = QHBoxLayout()
-        self._notes_title = QLabel("Notas da guitarra")
+        self._notes_title = QLabel("Notas")
         self._notes_title.setStyleSheet(f"color: {theme.OVERLAY0}; font-weight: bold; font-size: 13px;")
         na_header.addWidget(self._notes_title)
+        self._notes_stem_buttons: dict[str, QPushButton] = {}
+        stem_group = QButtonGroup(self)
+        for stem in NOTE_STEMS:
+            btn = QPushButton(f"{self.STEM_ICONS[stem]} {stem.capitalize()}")
+            btn.setCheckable(True)
+            btn.setFixedHeight(24)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setAccessibleName(f"Notas do stem {stem.capitalize()}")
+            btn.setToolTip("I · alternar o instrumento das notas")
+            btn.clicked.connect(lambda _, s=stem: self._set_notes_stem(s))
+            btn.hide()
+            stem_group.addButton(btn)
+            na_header.addWidget(btn)
+            self._notes_stem_buttons[stem] = btn
+        na_header.addSpacing(8)
         self._notes_view_buttons: dict[str, QPushButton] = {}
         view_group = QButtonGroup(self)
         for key, label in (("tab", "Tab"), ("roll", "Piano-roll")):
@@ -705,6 +734,7 @@ class PlayerScreen(QWidget):
             "C": self._set_cue_point,
             "D": self._detect_chord,
             "N": self._toggle_notes,
+            "I": self._cycle_notes_stem,
             "T": self._toggle_notes_view,
         }
         for _, shortcuts in self.SHORTCUT_GROUPS:
@@ -958,22 +988,65 @@ class PlayerScreen(QWidget):
 
     # ── Detected notes ──────────────────────────────────
 
+    def _available_note_stems(self) -> list[str]:
+        if self._song is None or not self._notes_supported:
+            return []
+        return note_stems(self._song.id)
+
     def _refresh_notes_ui(self, detect: bool = False):
-        """Offer the notes once the song has a guitar stem; load them if shown."""
-        available = (
-            self._song is not None
-            and self._notes_supported
-            and has_guitar_stem(self._song.id)
-        )
-        self._btn_notes.setVisible(available)
-        show = available and self._btn_notes.isChecked()
+        """Offer the notes once the song has a stem to detect them in; load them if shown."""
+        stems = self._available_note_stems()
+        for stem, btn in self._notes_stem_buttons.items():
+            btn.setVisible(stem in stems)
+        self._btn_notes.setVisible(bool(stems))
+        show = bool(stems) and self._btn_notes.isChecked()
         self._notes_area.setVisible(show)
-        if show:
-            self._notes_views.currentWidget().set_position(self._audio.position_ms)
-            if detect or self._notes_song_id != self._song.id:
-                self._notes_song_id = self._song.id
-                self._notes_status.setText("Carregando notas...")
-                self._notes.detect(self._song.id)
+        if not show:
+            return
+        stem = self._preferred_notes_stem if self._preferred_notes_stem in stems else stems[0]
+        source = (self._song.id, stem)
+        if source != self._notes_source:
+            self._notes_source = source
+            self._show_notes_stem(stem)
+            detect = True
+        self._notes_views.currentWidget().set_position(self._audio.position_ms)
+        if detect:
+            self._notes_status.setText("Carregando notas...")
+            self._notes.detect(*source)
+
+    def _show_notes_stem(self, stem: str):
+        """Switch the notes area to ``stem``, empty until its notes load."""
+        self._notes_stem = stem
+        self._notes_stem_buttons[stem].setChecked(True)
+        self._detected_notes = []
+        self._position_fixes = []
+        self._note_roll.clear_notes()
+        tuning = self.TAB_TUNINGS[stem]
+        if tuning is not None:
+            self._tab.set_tuning(tuning)
+        self._tab.clear_notes()
+        tab_button = self._notes_view_buttons["tab"]
+        tab_button.setEnabled(tuning is not None)
+        tab_button.setToolTip(
+            "T · alternar entre tab e piano-roll" if tuning is not None
+            else "Piano só tem piano-roll"
+        )
+        self._set_notes_view(self._notes_view, save=False)
+
+    def _tab_tuning(self) -> tuple[int, ...] | None:
+        return self.TAB_TUNINGS.get(self._notes_stem)
+
+    def _set_notes_stem(self, stem: str):
+        self._preferred_notes_stem = stem
+        save_setting("notes_stem", stem)
+        self._refresh_notes_ui()
+
+    def _cycle_notes_stem(self):
+        if self._notes_area.isHidden():
+            return
+        stems = self._available_note_stems()
+        if self._notes_stem in stems:
+            self._set_notes_stem(stems[(stems.index(self._notes_stem) + 1) % len(stems)])
 
     def _toggle_notes(self):
         if not self._btn_notes.isHidden():
@@ -985,13 +1058,19 @@ class PlayerScreen(QWidget):
         self._refresh_notes_ui()
 
     def _toggle_notes_view(self):
-        if not self._notes_area.isHidden():
+        if not self._notes_area.isHidden() and self._tab_tuning() is not None:
             current = self._notes_views.currentWidget()
             self._set_notes_view("roll" if current is self._tab else "tab")
 
     def _set_notes_view(self, view: str, save: bool = True):
+        """Show ``view``, the user's choice; the piano-roll when there is no tab."""
         if view not in self._notes_view_buttons:
             view = "tab"
+        self._notes_view = view
+        if save:
+            save_setting("notes_view", view)
+        if self._tab_tuning() is None:
+            view = "roll"
         widget = self._tab if view == "tab" else self._note_roll
         previous = self._notes_views.currentWidget()
         if widget is not previous:
@@ -1000,8 +1079,6 @@ class PlayerScreen(QWidget):
         widget.set_position(self._audio.position_ms)
         self._notes_view_buttons[view].setChecked(True)
         self._update_notes_view_styles()
-        if save:
-            save_setting("notes_view", view)
         self._show_notes_count()
 
     def _on_notes_threshold(self, value: int):
@@ -1020,24 +1097,33 @@ class PlayerScreen(QWidget):
 
     def _update_tab(self):
         self._tab_timer.stop()
-        self._tab.set_notes(
-            fretting.assign_positions(self._visible_notes(), self._position_fixes),
-            self._notes_threshold.value() / 100,
-        )
+        tuning = self._tab_tuning()
+        if tuning is not None:
+            self._tab.set_notes(
+                fretting.assign_positions(self._visible_notes(), self._position_fixes, tuning),
+                self._notes_threshold.value() / 100,
+            )
         self._show_notes_count()
 
     def _show_notes_count(self):
-        if self._notes_song_id is None or self._notes.is_processing:
+        if self._notes_source is None or self._notes.is_processing:
             return
         count = self._note_roll.visible_note_count
         parts = [f"{count} nota{'s' if count != 1 else ''}"]
+        tuning = self._tab_tuning()
         if self._notes_views.currentWidget() is self._tab:
-            misfits = sum(not n.playable for n in self._tab.notes)
+            out_of_range = sum(n.string is None for n in self._tab.notes)
+            if out_of_range:
+                parts.append(f"{out_of_range} fora da extensão")
+            misfits = sum(n.string is not None and not n.playable for n in self._tab.notes)
             if misfits:
                 parts.append(f"{misfits} fora da digitação")
         # Against every detected note: a fix on a note below the threshold
         # is hidden, not orphaned.
-        orphans = len(fretting.orphan_fixes(self._detected_notes, self._position_fixes))
+        orphans = (
+            len(fretting.orphan_fixes(self._detected_notes, self._position_fixes, tuning))
+            if tuning is not None else 0
+        )
         if orphans:
             parts.append(
                 f"{orphans} posição fixada sem nota" if orphans == 1
@@ -1078,28 +1164,33 @@ class PlayerScreen(QWidget):
         if not self._song:
             return
         self._position_fixes = fixes
-        self._storage.set_position_fixes(self._song.id, fixes)
+        self._storage.set_position_fixes(self._song.id, self._notes_stem, fixes)
         self._update_tab()
 
-    def _on_notes_progress(self, song_id: str, msg: str):
-        if self._song and self._song.id == song_id:
+    def _on_notes_progress(self, song_id: str, stem: str, msg: str):
+        if (song_id, stem) == self._notes_source:
             self._notes_status.setText(msg)
 
-    def _on_notes_finished(self, song_id: str, notes: list):
-        if not self._song or self._song.id != song_id:
-            return  # finished for a song that is no longer open; it stays cached
+    def _on_notes_finished(self, song_id: str, stem: str, notes: list):
+        if (song_id, stem) != self._notes_source:
+            return  # for a song or stem no longer shown; it stays cached
         self._detected_notes = notes
-        self._position_fixes = self._storage.get_position_fixes(song_id)
+        self._position_fixes = self._storage.get_position_fixes(song_id, stem)
         self._note_roll.set_notes(notes)
         self._update_tab()
 
-    def _on_notes_error(self, song_id: str, msg: str):
-        if self._song and self._song.id == song_id:
+    def _on_notes_error(self, song_id: str, stem: str, msg: str):
+        if (song_id, stem) == self._notes_source:
             self._notes_status.setText(f"Erro: {msg[:60]}")
 
     def _update_notes_view_styles(self):
-        for btn in self._notes_view_buttons.values():
-            if btn.isChecked():
+        buttons = [*self._notes_stem_buttons.values(), *self._notes_view_buttons.values()]
+        for btn in buttons:
+            if not btn.isEnabled():
+                btn.setStyleSheet(
+                    f"color: {theme.SURFACE1}; background-color: transparent; border: 1px solid {theme.SURFACE0}; border-radius: 5px; font-size: 11px; padding: 1px 8px;"
+                )
+            elif btn.isChecked():
                 btn.setStyleSheet(
                     f"color: {theme.TEXT}; background-color: {theme.SURFACE0}; border: 1px solid {theme.MAUVE}; border-radius: 5px; font-size: 11px; padding: 1px 8px;"
                 )
@@ -1307,7 +1398,7 @@ class PlayerScreen(QWidget):
         self._detected_notes = []
         self._position_fixes = []
         self._notes_status.setText("")
-        self._notes_song_id = None
+        self._notes_source = None
         self._refresh_notes_ui()
 
         # async load — waveform rendered in _on_loading callback
