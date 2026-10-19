@@ -311,7 +311,12 @@ def assign_positions(notes, fixes: Sequence[PositionFix] = (),
 
 
 def string_names(tuning: Sequence[int] = STANDARD_TUNING) -> list[str]:
-    """Tab labels from string 1 down: e B G D A E in standard tuning, G D A E on bass."""
+    """Tab labels from string 1 down: e B G D A E in standard tuning, G D A E on bass.
+
+    String 1 is lowercase when another string has its name, as the high e
+    of a seven-string (e B G D A E B).
+    """
     names = [NOTE_NAMES[p % 12] for p in tuning]
-    lowest = min(range(len(tuning)), key=lambda i: tuning[i])
-    return [n.lower() if i == 0 and n == names[lowest] else n for i, n in enumerate(names)]
+    if names[0] in names[1:]:
+        names[0] = names[0].lower()
+    return names

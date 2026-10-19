@@ -18,7 +18,7 @@ Mostrar as notas detectadas alinhadas à waveform do Transcreve, como apoio para
 | --- | --- | --- |
 | 0 | Validação offline (script, sem UI). Ferramentas prontas em `validation/`; falta gravar | — |
 | 1 | Faixa piano-roll (CQT/posteriorgrama + notas) com vista de detalhe. Versão mínima feita (ver Decisões, item 4); faltam CQT/posteriorgrama, calibração e edição | Fase 0 decidir a camada principal |
-| 2 | Tab (Viterbi + fixar posição). Versão inicial feita (ver Decisões, item 5); faltam afinação e capotraste por música | Fase 1 |
+| 2 | Tab (Viterbi + fixar posição). Versão inicial feita (ver Decisões, itens 5 e 7); falta capotraste | Fase 1 |
 | 3 | Partitura sem compasso, grafia e tonalidade | Fase 1 |
 | 4 | Instrumentos transpositores | Fase 3, e só se houver uso real |
 
@@ -67,7 +67,7 @@ Roda uma vez por música. O resultado fica em `analysis/{song_id}/` na pasta de 
 
 Cada edição se ancora em (pitch, onset) com tolerância de ~50 ms, não no `id`. Ao reanalisar, as edições são re-ancoradas. As que ficarem sem nota correspondente aparecem como órfãs para o usuário resolver e nunca somem caladas. `adicionar` não precisa de âncora.
 
-**Nível da música.** Hoje `Song` só guarda seções e anotações; isto entra numa tabela nova.
+**Nível da música.** Hoje `Song` só guarda seções e anotações; isto entra numa tabela nova, `song_settings` (chave e valor JSON), que por enquanto guarda só a afinação.
 
 - tonalidade: tônica + modo (maior/menor), default C maior;
 - afinação (MIDI de cada corda, default E padrão) e capotraste;
@@ -220,8 +220,17 @@ O instrumento é definido pelo intervalo de transposição como par (passos de l
    - **Notas fora da forma:** um acorde pode deixar uma nota fora da digitação, a 10 × score, e ela aparece em vermelho. Com mais de 6 notas ou forma impossível, saem as de menor score.
    - **Eventos:** onsets encadeados a até 50 ms um do outro, com no máximo 120 ms, e a mesma nota duas vezes no evento vira uma. Fragmentos em eventos diferentes não são emendados, porque engoliriam notas repetidas.
    - **Correção:** clicar num número oferece as outras posições. A escolha vira restrição dura, guardada em `note_edits` (`kind = 'posicao'`, âncora em pitch + onset ±50 ms). Numa mesma corda do mesmo acorde, a correção mais nova vence; as órfãs aparecem na contagem.
-   - **Afinação:** E padrão fixo, sem capotraste.
+   - **Afinação:** E padrão fixo, sem capotraste. Substituído pelo item 7.
 6. **Notas de outros stems** (19 out 2026, pedido do Pedro). Os botões ao lado de "Notas" (atalho I) trocam o stem analisado entre guitarra, baixo, piano e outros, entre os que estiverem no cache; um cache antigo de 4 stems oferece baixo e outros. A escolha fica salva, e uma música sem o stem escolhido mostra o primeiro disponível.
-   - **Faixa decodificada:** guitarra E2–E6 (40–88), como antes; baixo E1–G4 (28–67), 4 cordas e 24 casas; piano e outros A0–C8 (21–108), a faixa inteira do Basic Pitch. Os demais parâmetros de extração são os mesmos da guitarra, sem validação própria.
+   - **Faixa decodificada:** guitarra E2–E6 (40–88), como antes (o item 7 a faz seguir a afinação); baixo E1–G4 (28–67), 4 cordas e 24 casas; piano e outros A0–C8 (21–108), a faixa inteira do Basic Pitch. Os demais parâmetros de extração são os mesmos da guitarra, sem validação própria.
    - **Vistas:** baixo tem tab de 4 cordas (G D A E), com o mesmo Viterbi de mão parada da guitarra; piano só piano-roll; outros têm tab de guitarra com as notas que cabem nela, e as que não cabem aparecem como "fora da extensão".
    - **Cache e edições por stem:** `notes-{stem}.json` e `kind = 'posicao:{stem}'`. A guitarra mantém `notes.json` e `kind = 'posicao'`, para não redetectar as músicas já analisadas nem perder as posições fixadas.
+7. **Número de cordas e afinação por música** (19 out 2026, pedido do Pedro depois de um amigo reclamar que nada abaixo do E grave aparecia para tirar djent). Ao lado de Tab e Piano-roll, dois seletores escolhem o número de cordas e a afinação, entre predefinidas (`services/tunings.py`): guitarra de 6 (E, Eb, D e C padrão, drop D, C e B, DADGAD, open G), 7 (B e A padrão, drop A) e 8 cordas (F# e F padrão, drop E); baixo de 4 (E, Eb e D padrão, drop D e C), 5 (B padrão, drop A) e 6 cordas (B padrão).
+   - **A faixa decodificada segue a afinação:** da corda solta mais grave até 24 casas acima da mais aguda. E padrão continua 40–88 e o baixo de 4 cordas 28–67, então os caches e as posições fixadas de antes continuam valendo. Outra afinação muda a chave do cache e redetecta (1 a 6 s por música no computador do Pedro). Cada stem tem um só arquivo de cache, então voltar à afinação anterior redetecta de novo.
+   - **Por que não decodificar tudo de uma vez e filtrar:** decodificando o stem de guitarra até A0, os 5 stems BS-RoFormer do cache ganharam de 0 a 9 notas abaixo de E2 no limiar 0,35, mas o htdemucs_6s de The Windmills of Your Mind ganhou 145 em 1990, vazamento do baixo e da orquestra. Abaixo da corda mais grave só há vazamento, então a afinação corta. Decodificar mais largo também muda umas poucas notas acima de E2 (4 em 1362 numa música).
+   - **Por música, com o último escolhido como padrão:** a afinação fica em `song_settings` (`tuning:guitar`, `tuning:bass`). Uma música sem afinação própria recebe a última escolhida para o instrumento quando suas notas aparecem pela primeira vez, e fica com ela. Escolher outra depois não muda as músicas já vistas.
+   - **Os seletores só mudam pelo popup** (clique, ou Alt+↓ e F4 pelo teclado). A roda e as setas num combo fechado trocariam a afinação e redetectariam sem querer.
+   - **Outros** usam a afinação da guitarra só na tab; a faixa deles continua A0–C8 e trocar a afinação não redetecta.
+   - **Posições fixadas** continuam ancoradas na corda. As cordas contam a partir da mais aguda, então as de 1 a 6 são as mesmas na guitarra de 6, 7 e 8 cordas. Uma correção numa corda que a nova afinação não tem, ou que não alcança a nota, aparece como órfã.
+   - **Rótulos:** a corda 1 fica em minúscula quando outra corda tem o mesmo nome (e B G D A E B na de 7 cordas). Os nomes usam sustenidos: Eb padrão aparece como d# A# F# C# G# D#.
+   - **Não validado:** Basic Pitch abaixo de E1, como o B0 (~31 Hz) do baixo de 5 e 6 cordas. O teste sintético cobre o B1 da guitarra de 7 cordas.

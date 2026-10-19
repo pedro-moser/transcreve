@@ -6,6 +6,8 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 
@@ -23,7 +25,11 @@ from services.note_detection_service import DetectedNote  # noqa: E402
 from services.storage_service import StorageService  # noqa: E402
 from widgets.tab_widget import TabWidget  # noqa: E402
 
-C4, G4, GS4 = 60, 67, 68
+B1, C4, G4, GS4 = 35, 60, 67, 68
+STANDARD = fretting.STANDARD_TUNING
+SEVEN = STANDARD + (B1,)
+EIGHT = SEVEN + (30,)
+DROP_D = STANDARD[:5] + (38,)
 NOTES = [
     DetectedNote(1.0, 2.0, C4, 0.7),
     DetectedNote(1.01, 2.0, G4, 0.6),
@@ -69,14 +75,25 @@ class PositionFixStorageTests(unittest.TestCase):
             self.storage.get_position_fixes("song", "guitar"), [PositionFix(C4, 1.0, 3)]
         )
 
-    def test_deleting_a_song_deletes_its_fixes(self):
+    def test_deleting_a_song_deletes_its_fixes_and_tunings(self):
         song = Song(title="Teste", file_path="/x.wav")
         self.storage.save_song(song)
         self.storage.set_position_fixes(song.id, "guitar", [PositionFix(C4, 1.0, 3)])
         self.storage.set_position_fixes(song.id, "bass", [PositionFix(40, 1.0, 4)])
+        self.storage.set_tuning(song.id, "guitar", SEVEN)
         self.storage.delete_song(song.id)
         self.assertEqual(self.storage.get_position_fixes(song.id, "guitar"), [])
         self.assertEqual(self.storage.get_position_fixes(song.id, "bass"), [])
+        self.assertIsNone(self.storage.get_tuning(song.id, "guitar"))
+
+    def test_tuning_round_trips_per_song_and_instrument(self):
+        self.assertIsNone(self.storage.get_tuning("song", "guitar"))
+        self.storage.set_tuning("song", "guitar", SEVEN)
+        self.storage.set_tuning("song", "bass", fretting.BASS_TUNING)
+        self.storage.set_tuning("song", "guitar", EIGHT)
+        self.assertEqual(self.storage.get_tuning("song", "guitar"), EIGHT)
+        self.assertEqual(self.storage.get_tuning("song", "bass"), fretting.BASS_TUNING)
+        self.assertIsNone(self.storage.get_tuning("another-song", "guitar"))
 
 
 class TabWidgetTests(unittest.TestCase):
@@ -165,21 +182,39 @@ class PlayerTabTests(unittest.TestCase):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        self.stems_dir = stems
         self.storage = StorageService(root / "test.db")
         self.screen = player_screen.PlayerScreen(self.storage)
         patcher = patch.object(self.screen._notes, "detect")
         self.detect = patcher.start()
         self.addCleanup(patcher.stop)
 
-        self.song = Song(title="Teste", file_path="/nonexistent.wav")
-        cache = stems / self.song.id
-        cache.mkdir(parents=True)
-        for name in ("vocals", "drums", "bass", "guitar", "piano", "other"):
-            np.save(cache / f"{name}.npy", np.zeros((10, 2), np.float32))
-        (cache / "metadata.json").write_text(json.dumps({"sample_rate": 44_100}))
-        self.screen._song = self.song
+        self.song = self.open_song()
+        self.screen._on_notes_finished(self.song.id, "guitar", fretting.STANDARD_TUNING, NOTES)
+
+    def open_song(self, song=None) -> Song:
+        """Show ``song``, or a new one, with every stem cached."""
+        if song is None:
+            song = Song(title="Teste", file_path="/nonexistent.wav")
+            cache = self.stems_dir / song.id
+            cache.mkdir(parents=True)
+            for name in ("vocals", "drums", "bass", "guitar", "piano", "other"):
+                np.save(cache / f"{name}.npy", np.zeros((10, 2), np.float32))
+            (cache / "metadata.json").write_text(json.dumps({"sample_rate": 44_100}))
+        self.screen._song = song
+        self.screen._notes_source = None
         self.screen._refresh_notes_ui()
-        self.screen._on_notes_finished(self.song.id, "guitar", NOTES)
+        return song
+
+    def choose(self, combo, text):
+        """Pick the item ``text`` of ``combo`` as the user does."""
+        index = combo.findText(text)
+        self.assertGreaterEqual(index, 0, text)
+        combo.setCurrentIndex(index)
+        combo.activated.emit(index)
+
+    def combo_items(self, combo):
+        return [combo.itemText(i) for i in range(combo.count())]
 
     def tearDown(self):
         self.screen.cleanup()
@@ -231,36 +266,36 @@ class PlayerTabTests(unittest.TestCase):
 
     def test_orphan_fixes_are_reported(self):
         self.storage.set_position_fixes(self.song.id, "guitar", [PositionFix(50, 9.0, 4)])
-        self.screen._on_notes_finished(self.song.id, "guitar", NOTES)
+        self.screen._on_notes_finished(self.song.id, "guitar", fretting.STANDARD_TUNING, NOTES)
         self.assertIn("1 posição fixada sem nota", self.screen._notes_status.text())
 
-    def test_every_stem_with_notes_has_a_tab_tuning_entry(self):
-        self.assertEqual(set(self.screen.TAB_TUNINGS), set(nd.NOTE_STEMS))
+    def test_every_stem_with_notes_has_a_tab_instrument_entry(self):
+        self.assertEqual(set(self.screen.TAB_INSTRUMENTS), set(nd.NOTE_STEMS))
         offered = [s for s, b in self.screen._notes_stem_buttons.items() if not b.isHidden()]
         self.assertEqual(offered, ["guitar", "bass", "piano", "other"])
         self.assertTrue(self.screen._notes_stem_buttons["guitar"].isChecked())
 
     def test_bass_shows_a_bass_tab_and_remembers_the_choice(self):
         self.screen._set_notes_stem("bass")
-        self.detect.assert_called_with(self.song.id, "bass")
+        self.detect.assert_called_with(self.song.id, "bass", fretting.BASS_TUNING)
         self.assertEqual(self.screen._tab.tuning, fretting.BASS_TUNING)
         self.assertEqual(self.screen._tab.notes, [])  # the guitar's notes are gone
         self.assertEqual(app_settings.load_setting("notes_stem"), "bass")
         E1 = 28
-        self.screen._on_notes_finished(self.song.id, "bass", [DetectedNote(1.0, 2.0, E1, 0.7)])
+        self.screen._on_notes_finished(self.song.id, "bass", fretting.BASS_TUNING, [DetectedNote(1.0, 2.0, E1, 0.7)])
         [note] = self.screen._tab.notes
         self.assertEqual((note.string, note.fret), (4, 0))
 
     def test_notes_of_a_stem_no_longer_shown_are_ignored(self):
         self.screen._set_notes_stem("bass")
-        self.screen._on_notes_finished(self.song.id, "guitar", NOTES)
+        self.screen._on_notes_finished(self.song.id, "guitar", fretting.STANDARD_TUNING, NOTES)
         self.assertEqual(self.screen._tab.notes, [])
         self.assertEqual(self.screen._note_roll.visible_note_count, 0)
 
     def test_fixes_belong_to_the_stem_they_were_made_in(self):
         self.screen._on_position_chosen(self.tab_note(C4), 5)
         self.screen._set_notes_stem("other")
-        self.screen._on_notes_finished(self.song.id, "other", NOTES)
+        self.screen._on_notes_finished(self.song.id, "other", None, NOTES)
         self.assertFalse(self.tab_note(C4).fixed)
         self.screen._on_position_chosen(self.tab_note(G4), 2)
         self.assertEqual(
@@ -274,7 +309,7 @@ class PlayerTabTests(unittest.TestCase):
         C2, C7 = 36, 96
         notes = NOTES + [DetectedNote(5.0, 5.5, C2, 0.7), DetectedNote(6.0, 6.5, C7, 0.7)]
         self.screen._set_notes_stem("other")
-        self.screen._on_notes_finished(self.song.id, "other", notes)
+        self.screen._on_notes_finished(self.song.id, "other", None, notes)
         self.assertEqual(self.screen._tab.tuning, fretting.STANDARD_TUNING)
         placed = {t.pitch for t in self.screen._tab.notes if t.string is not None}
         self.assertEqual(placed, {C4, G4, GS4})
@@ -289,13 +324,114 @@ class PlayerTabTests(unittest.TestCase):
         self.assertFalse(self.screen._notes_view_buttons["tab"].isEnabled())
         self.screen._toggle_notes_view()  # T does nothing
         self.assertIs(self.screen._notes_views.currentWidget(), self.screen._note_roll)
-        self.screen._on_notes_finished(self.song.id, "piano", NOTES)
+        self.screen._on_notes_finished(self.song.id, "piano", None, NOTES)
         self.assertEqual(self.screen._notes_status.text(), "3 notas")
         # The tab stays the preferred view for the instruments that have one.
         self.assertNotEqual(app_settings.load_setting("notes_view"), "roll")
         self.screen._set_notes_stem("guitar")
         self.assertIs(self.screen._notes_views.currentWidget(), self.screen._tab)
         self.assertTrue(self.screen._notes_view_buttons["tab"].isEnabled())
+
+    def test_pickers_show_the_song_tuning(self):
+        strings, tuning = self.screen._strings_combo, self.screen._tuning_combo
+        self.assertEqual(self.combo_items(strings), ["6 cordas", "7 cordas", "8 cordas"])
+        self.assertEqual(strings.currentText(), "6 cordas")
+        self.assertEqual(tuning.currentText(), "E padrão")
+        self.assertIn("Drop D", self.combo_items(tuning))
+        self.assertEqual(self.storage.get_tuning(self.song.id, "guitar"), STANDARD)
+
+    def test_seven_strings_detect_down_to_the_low_b_and_keep_fixes(self):
+        self.screen._on_position_chosen(self.tab_note(C4), 5)
+        self.choose(self.screen._strings_combo, "7 cordas")
+        self.detect.assert_called_with(self.song.id, "guitar", SEVEN)
+        self.assertEqual(self.screen._tab.tuning, SEVEN)
+        self.assertEqual(self.screen._tuning_combo.currentText(), "B padrão")
+        self.assertEqual(
+            self.combo_items(self.screen._tuning_combo), ["B padrão", "Drop A", "A padrão"]
+        )
+        self.assertEqual(self.storage.get_tuning(self.song.id, "guitar"), SEVEN)
+        self.assertEqual(app_settings.load_setting("tuning_guitar"), list(SEVEN))
+        # Notes decoded for the old tuning are dropped.
+        self.screen._on_notes_finished(self.song.id, "guitar", STANDARD, NOTES)
+        self.assertEqual(self.screen._tab.notes, [])
+        self.screen._on_notes_finished(
+            self.song.id, "guitar", SEVEN, NOTES + [DetectedNote(5.0, 6.0, B1, 0.7)]
+        )
+        self.assertEqual(self.tab_note(B1)[4:6], (7, 0))
+        # Strings count from the highest: the fix on the A string still holds.
+        self.assertEqual(self.tab_note(C4)[4:8], (5, 15, True, True))
+
+    def test_an_alternate_tuning_keeps_its_string_count(self):
+        self.choose(self.screen._tuning_combo, "Drop D")
+        self.detect.assert_called_with(self.song.id, "guitar", DROP_D)
+        self.detect.reset_mock()
+        self.choose(self.screen._strings_combo, "6 cordas")
+        self.detect.assert_not_called()
+        self.assertEqual(self.screen._tab.tuning, DROP_D)
+        self.assertEqual(self.screen._tab.getPlotItem().getAxis("left").names[5], "D")
+
+    def test_a_new_song_takes_the_last_tuning_chosen_and_keeps_its_own(self):
+        second = self.open_song()
+        self.choose(self.screen._strings_combo, "8 cordas")
+        self.assertEqual(self.storage.get_tuning(second.id, "guitar"), EIGHT)
+        # The song shown before keeps the tuning it was shown in.
+        self.open_song(self.song)
+        self.detect.assert_called_with(self.song.id, "guitar", STANDARD)
+        self.assertEqual(self.screen._strings_combo.currentText(), "6 cordas")
+        third = self.open_song()
+        self.detect.assert_called_with(third.id, "guitar", EIGHT)
+        self.assertEqual(self.storage.get_tuning(third.id, "guitar"), EIGHT)
+        self.assertEqual(self.screen._tab.tuning, EIGHT)
+
+    def test_other_follows_the_guitar_tuning_without_detecting_again(self):
+        self.screen._set_notes_stem("other")
+        self.detect.assert_called_with(self.song.id, "other", None)
+        self.screen._on_notes_finished(
+            self.song.id, "other", None, NOTES + [DetectedNote(5.0, 6.0, B1, 0.7)]
+        )
+        self.assertIsNone(self.tab_note(B1).string)
+        calls = self.detect.call_count
+        self.choose(self.screen._strings_combo, "7 cordas")
+        self.assertEqual(self.detect.call_count, calls)
+        self.assertEqual(self.screen._tab.tuning, SEVEN)
+        self.assertEqual(self.tab_note(B1)[4:6], (7, 0))
+        self.assertEqual(self.storage.get_tuning(self.song.id, "guitar"), SEVEN)
+        self.screen._set_notes_stem("guitar")
+        self.detect.assert_called_with(self.song.id, "guitar", SEVEN)
+
+    def test_bass_has_four_to_six_strings(self):
+        self.screen._set_notes_stem("bass")
+        strings = self.screen._strings_combo
+        self.assertEqual(self.combo_items(strings), ["4 cordas", "5 cordas", "6 cordas"])
+        self.choose(strings, "6 cordas")
+        six = (48, 43, 38, 33, 28, 23)
+        self.detect.assert_called_with(self.song.id, "bass", six)
+        self.assertEqual(
+            self.screen._tab.getPlotItem().getAxis("left").names, ["C", "G", "D", "A", "E", "B"]
+        )
+        # The guitar keeps its own tuning.
+        self.assertEqual(self.storage.get_tuning(self.song.id, "guitar"), STANDARD)
+
+    def test_wheel_and_arrow_keys_do_not_change_the_tuning(self):
+        calls = self.detect.call_count
+        for combo in (self.screen._strings_combo, self.screen._tuning_combo):
+            wheel = QWheelEvent(
+                QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120),
+                Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+            )
+            QApplication.sendEvent(combo, wheel)
+            for key in (Qt.Key_Down, Qt.Key_End):
+                QApplication.sendEvent(combo, QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier))
+            self.assertEqual(combo.currentIndex(), 0)
+        self.assertEqual(self.detect.call_count, calls)
+        self.assertEqual(self.storage.get_tuning(self.song.id, "guitar"), STANDARD)
+
+    def test_piano_has_no_tuning(self):
+        self.screen._set_notes_stem("piano")
+        self.assertTrue(self.screen._strings_combo.isHidden())
+        self.assertTrue(self.screen._tuning_combo.isHidden())
+        self.screen._set_notes_stem("guitar")
+        self.assertFalse(self.screen._strings_combo.isHidden())
 
     def test_i_cycles_through_the_instruments(self):
         seen = []

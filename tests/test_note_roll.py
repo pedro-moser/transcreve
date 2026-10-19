@@ -16,6 +16,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import app_settings  # noqa: E402
 from models.song import Song  # noqa: E402
 from screens import player_screen  # noqa: E402
+from services import fretting  # noqa: E402
 from services import note_detection_service as nd  # noqa: E402
 from services.note_detection_service import DetectedNote  # noqa: E402
 from services.storage_service import StorageService  # noqa: E402
@@ -134,7 +135,7 @@ class PlayerNotesTests(unittest.TestCase):
         song = self.open_song(stems=["guitar"])
         self.assertFalse(self.screen._btn_notes.isHidden())
         self.assertFalse(self.screen._notes_area.isHidden())
-        self.detect.assert_called_once_with(song.id, "guitar")
+        self.detect.assert_called_once_with(song.id, "guitar", fretting.STANDARD_TUNING)
 
     def test_a_four_stem_song_offers_the_notes_of_bass_and_other(self):
         song = self.open_song(stems=["vocals", "drums", "bass", "other"])
@@ -142,7 +143,7 @@ class PlayerNotesTests(unittest.TestCase):
         offered = [s for s, b in self.screen._notes_stem_buttons.items() if not b.isHidden()]
         self.assertEqual(offered, ["bass", "other"])
         # Without a guitar stem, the first one; the preference stays.
-        self.detect.assert_called_once_with(song.id, "bass")
+        self.detect.assert_called_once_with(song.id, "bass", fretting.BASS_TUNING)
         self.assertIsNone(app_settings.load_setting("notes_stem"))
 
     def test_notes_are_not_offered_without_stems(self):
@@ -161,9 +162,9 @@ class PlayerNotesTests(unittest.TestCase):
 
     def test_notes_for_another_song_are_ignored(self):
         song = self.open_song(stems=["guitar"])
-        self.screen._on_notes_finished("another-song", "guitar", NOTES)
+        self.screen._on_notes_finished("another-song", "guitar", fretting.STANDARD_TUNING, NOTES)
         self.assertEqual(self.screen._note_roll.visible_note_count, 0)
-        self.screen._on_notes_finished(song.id, "guitar", NOTES)
+        self.screen._on_notes_finished(song.id, "guitar", fretting.STANDARD_TUNING, NOTES)
         self.assertEqual(self.screen._note_roll.visible_note_count, 2)
         self.assertEqual(self.screen._notes_status.text(), "2 notas")
 

@@ -15,6 +15,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from services import note_detection_service as nd  # noqa: E402
+from services import tunings  # noqa: E402
 
 HAS_ONNXRUNTIME = importlib.util.find_spec("onnxruntime") is not None
 SONG_ID = "song-1"
@@ -83,12 +84,32 @@ class StemAvailabilityTests(TempDirsTestCase):
         self.assertEqual(nd.note_stems("other-song"), [])
 
     def test_each_stem_decodes_its_own_range(self):
-        self.assertEqual(nd.extraction("guitar"), nd.EXTRACTION)
+        # Standard tunings decode what they did before tunings were chosen,
+        # so their cached notes stay valid.
+        self.assertEqual(nd.extraction("guitar"), {**nd.EXTRACTION, "min_pitch": 40, "max_pitch": 88})
         bass = nd.extraction("bass")
         self.assertEqual((bass["min_pitch"], bass["max_pitch"]), (28, 67))
         self.assertEqual(bass["min_frames"], nd.EXTRACTION["min_frames"])
         piano = nd.extraction("piano")
         self.assertEqual((piano["min_pitch"], piano["max_pitch"]), (21, 108))
+
+    def test_guitar_and_bass_decode_their_tuning(self):
+        def preset(instrument, strings, name):
+            return next(t.strings for t in tunings.TUNINGS[instrument][strings] if t.name == name)
+
+        self.assertEqual(nd.pitch_range("guitar", preset("guitar", 7, "B padrão")), (35, 88))
+        self.assertEqual(nd.pitch_range("guitar", preset("guitar", 8, "F# padrão")), (30, 88))
+        self.assertEqual(nd.pitch_range("guitar", preset("guitar", 6, "D padrão")), (38, 86))
+        self.assertEqual(nd.pitch_range("bass", preset("bass", 5, "B padrão")), (23, 67))
+        self.assertEqual(nd.pitch_range("bass", preset("bass", 6, "B padrão")), (23, 72))
+
+    def test_every_tuning_fits_the_model(self):
+        for instrument, by_count in tunings.TUNINGS.items():
+            for presets in by_count.values():
+                for tuning in presets:
+                    low, high = nd.pitch_range(instrument, tuning.strings)
+                    self.assertGreaterEqual(low, 21, tuning)  # A0, the model's lowest
+                    self.assertLessEqual(high, 108, tuning)
 
 
 class NotesCacheTests(TempDirsTestCase):
@@ -112,7 +133,7 @@ class NotesCacheTests(TempDirsTestCase):
             "version": nd.CACHE_VERSION,
             "stem": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
             "model_sha256": nd.bp.MODEL_SHA256,
-            "extraction": dict(nd.EXTRACTION),
+            "extraction": {**nd.EXTRACTION, "min_pitch": 40, "max_pitch": 88},
             "tuning_gate_cents": nd.TUNING_GATE_CENTS,
         }
         nd.save_cached_notes(SONG_ID, "guitar", key, 0.0, self.NOTES)
@@ -141,6 +162,13 @@ class NotesCacheTests(TempDirsTestCase):
         os.utime(stem, ns=(before + 1_000_000, before + 1_000_000))
         self.assertIsNone(
             nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar"))
+        )
+
+    def test_another_tuning_makes_cached_notes_stale(self):
+        nd.save_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar"), 0.0, self.NOTES)
+        seven = tunings.TUNINGS["guitar"][7][0].strings
+        self.assertIsNone(
+            nd.load_cached_notes(SONG_ID, "guitar", nd.cache_key(SONG_ID, "guitar", seven))
         )
 
     def test_new_extraction_parameters_make_cached_notes_stale(self):
@@ -184,6 +212,12 @@ class DetectionTests(TempDirsTestCase):
         self.assertIn(33, {n.pitch for n in bass if abs(n.onset - 1.0) < 0.06})
         self.assertNotIn(33, {n.pitch for n in guitar})
 
+    def test_seven_string_tuning_reaches_the_low_b(self):
+        audio = render(3.0, [(1.0, 35)], 22_050)
+        seven = tunings.TUNINGS["guitar"][7][0].strings
+        notes, _ = nd.detect_notes(audio, 22_050, self.session, "guitar", seven)
+        self.assertIn(35, {n.pitch for n in notes if abs(n.onset - 1.0) < 0.06})
+
     def test_sharp_recording_is_retuned_in_song_time(self):
         # 40 cents sharp: the model input is slowed down to reach A440, so
         # uncorrected times would land 2.3 % late (70 ms at 3 s).
@@ -205,9 +239,9 @@ class DetectionTests(TempDirsTestCase):
             results = []
             worker = nd._DetectWorker(SONG_ID, "guitar")
             worker.finished.connect(
-                lambda song_id, stem, notes: results.append((song_id, stem, notes))
+                lambda song_id, stem, tuning, notes: results.append((song_id, stem, notes))
             )
-            worker.error.connect(lambda song_id, stem, msg: self.fail(msg))
+            worker.error.connect(lambda song_id, stem, tuning, msg: self.fail(msg))
             worker.run()
             return [(song_id, notes) for song_id, stem, notes in results if stem == "guitar"]
 

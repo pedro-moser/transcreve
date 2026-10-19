@@ -39,6 +39,27 @@ class PositionTests(unittest.TestCase):
     def test_string_names_follow_tab_order(self):
         self.assertEqual(fretting.string_names(), ["e", "B", "G", "D", "A", "E"])
 
+    def test_string_names_of_extended_and_dropped_tunings(self):
+        seven = (64, 59, 55, 50, 45, 40, 35)
+        eight = seven + (30,)
+        drop_d = (64, 59, 55, 50, 45, 38)
+        d_standard = (62, 57, 53, 48, 43, 38)
+        self.assertEqual(fretting.string_names(seven), ["e", "B", "G", "D", "A", "E", "B"])
+        self.assertEqual(fretting.string_names(eight), ["e", "B", "G", "D", "A", "E", "B", "F#"])
+        self.assertEqual(fretting.string_names(drop_d), ["E", "B", "G", "D", "A", "D"])
+        self.assertEqual(fretting.string_names(d_standard), ["d", "A", "F", "C", "G", "D"])
+
+    def test_extra_low_strings_keep_the_numbers_of_the_others(self):
+        # Strings count from the highest, so a fix on string 5 means the same
+        # A string on a six- and a seven-string.
+        B1, A2 = 35, 45
+        seven = fretting.STANDARD_TUNING + (B1,)
+        self.assertEqual(fretting.positions(B1, seven), [fretting.Position(7, 0)])
+        self.assertEqual(
+            fretting.positions(A2, seven),
+            fretting.positions(A2) + [fretting.Position(7, 10)],
+        )
+
 
 class GroupingTests(unittest.TestCase):
     def test_a_strum_chains_close_onsets(self):

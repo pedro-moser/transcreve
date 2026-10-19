@@ -46,6 +46,15 @@ class StorageService:
                 data TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY (song_id, kind, pitch, onset_ms)
             );
+            -- Song-level settings of the notes (SPEC-notas.md, nível da
+            -- música), value as JSON. key 'tuning:guitar' or 'tuning:bass':
+            -- open pitches from string 1, the highest.
+            CREATE TABLE IF NOT EXISTS song_settings (
+                song_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (song_id, key)
+            );
         """)
         self._conn.commit()
 
@@ -84,6 +93,7 @@ class StorageService:
     def delete_song(self, song_id: str):
         self._conn.execute("DELETE FROM songs WHERE id = ?", (song_id,))
         self._conn.execute("DELETE FROM note_edits WHERE song_id = ?", (song_id,))
+        self._conn.execute("DELETE FROM song_settings WHERE song_id = ?", (song_id,))
         self._conn.commit()
 
     @staticmethod
@@ -118,6 +128,21 @@ class StorageService:
                      json.dumps({"string": fix.string}))
                     for fix in fixes
                 ],
+            )
+
+    def get_tuning(self, song_id: str, instrument: str) -> tuple[int, ...] | None:
+        row = self._conn.execute(
+            "SELECT value FROM song_settings WHERE song_id = ? AND key = ?",
+            (song_id, f"tuning:{instrument}"),
+        ).fetchone()
+        return tuple(json.loads(row["value"])) if row else None
+
+    def set_tuning(self, song_id: str, instrument: str, tuning: tuple[int, ...]):
+        with self._conn:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO song_settings (song_id, key, value)
+                   VALUES (?, ?, ?)""",
+                (song_id, f"tuning:{instrument}", json.dumps(list(tuning))),
             )
 
     def _row_to_song(self, row: sqlite3.Row) -> Song:

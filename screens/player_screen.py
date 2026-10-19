@@ -27,7 +27,7 @@ from models.section import Section
 from models.song import Song
 from services.audio_service import AudioService
 from services.chord_service import ChordService
-from services import fretting
+from services import fretting, tunings
 from app_settings import load_setting, save_setting
 from services.separation_service import (
     DEFAULT_MODEL,
@@ -38,6 +38,7 @@ from services.separation_service import (
 )
 from services.note_detection_service import (
     NOTE_STEMS,
+    TUNED_STEMS,
     NoteDetectionService,
     is_available as notes_available,
     note_stems,
@@ -47,6 +48,26 @@ from widgets.note_roll_widget import NoteRollWidget
 from widgets.tab_widget import TabWidget
 from widgets.waveform_widget import WaveformWidget
 import theme
+
+
+class _PickerComboBox(QComboBox):
+    """A combo box that changes only through its popup.
+
+    Choosing a tuning detects the notes again, so neither the wheel over the
+    header nor an arrow key pressed after the last choice should change it.
+    Keyboard users open the popup with Alt+Down or F4.
+    """
+
+    _STEP_KEYS = {Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Home, Qt.Key_End}
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if event.key() in self._STEP_KEYS and not event.modifiers() & Qt.AltModifier:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
 
 
 class PlayerScreen(QWidget):
@@ -94,13 +115,14 @@ class PlayerScreen(QWidget):
         "piano": "🎹",
         "other": "🎺",
     }
-    # Tab tuning for the notes of each stem in NOTE_STEMS. The piano has only
-    # the piano-roll; "other" gets a guitar tab of the notes that fit it.
-    TAB_TUNINGS = {
-        "guitar": fretting.STANDARD_TUNING,
-        "bass": fretting.BASS_TUNING,
+    # Tab instrument for the notes of each stem in NOTE_STEMS. The piano has
+    # only the piano-roll; "other" gets a tab of the notes that fit the
+    # guitar, in the guitar's tuning.
+    TAB_INSTRUMENTS = {
+        "guitar": tunings.GUITAR,
+        "bass": tunings.BASS,
         "piano": None,
-        "other": fretting.STANDARD_TUNING,
+        "other": tunings.GUITAR,
     }
 
     def __init__(self, storage: StorageService, parent=None):
@@ -117,11 +139,16 @@ class PlayerScreen(QWidget):
         self._notes.finished.connect(self._on_notes_finished)
         self._notes.error.connect(self._on_notes_error)
         self._notes_supported = notes_available()
-        # Song and stem whose notes were last requested, so they load once.
-        self._notes_source: tuple[str, str] | None = None
+        # Song, stem and decoded tuning (None outside TUNED_STEMS) whose notes
+        # were last requested, so they load once.
+        self._notes_source: tuple[str, str, tuple | None] | None = None
         # Stem whose notes are shown, and the one the user chose last; a
         # song without that stem shows another.
         self._notes_stem = self._preferred_notes_stem = load_setting("notes_stem", "guitar")
+        # Tuning of its tab, None for the piano.
+        self._notes_tuning: tuple[int, ...] | None = None
+        # Tunings offered by self._tuning_combo, in its order.
+        self._tuning_choices: list[tuple[int, ...]] = []
         # Its detected notes, before the threshold, and the positions the
         # user fixed for them.
         self._detected_notes: list = []
@@ -457,6 +484,24 @@ class PlayerScreen(QWidget):
             view_group.addButton(btn)
             na_header.addWidget(btn)
             self._notes_view_buttons[key] = btn
+        na_header.addSpacing(8)
+        self._strings_combo = _PickerComboBox()
+        self._strings_combo.setFixedHeight(24)
+        self._strings_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._strings_combo.setAccessibleName("Número de cordas")
+        self._strings_combo.setToolTip("Número de cordas do instrumento nesta música")
+        self._strings_combo.activated.connect(self._on_strings_chosen)
+        na_header.addWidget(self._strings_combo)
+        self._tuning_combo = _PickerComboBox()
+        self._tuning_combo.setFixedHeight(24)
+        self._tuning_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._tuning_combo.setAccessibleName("Afinação")
+        self._tuning_combo.setToolTip(
+            "Afinação do instrumento nesta música. As notas abaixo da corda "
+            "mais grave não são detectadas"
+        )
+        self._tuning_combo.activated.connect(self._on_tuning_chosen)
+        na_header.addWidget(self._tuning_combo)
         self._notes_status = QLabel("")
         self._notes_status.setStyleSheet(f"color: {theme.OVERLAY0}; font-size: 11px;")
         na_header.addWidget(self._notes_status)
@@ -1004,26 +1049,30 @@ class PlayerScreen(QWidget):
         if not show:
             return
         stem = self._preferred_notes_stem if self._preferred_notes_stem in stems else stems[0]
-        source = (self._song.id, stem)
+        tuning = self._song_tuning(stem)
+        source = (self._song.id, stem, tuning if stem in TUNED_STEMS else None)
         if source != self._notes_source:
             self._notes_source = source
-            self._show_notes_stem(stem)
+            self._show_notes_stem(stem, tuning)
             detect = True
+        elif tuning != self._notes_tuning:
+            # "other" follows the guitar's tuning, but its notes do not
+            # depend on it: only the tab changes.
+            self._show_tuning(tuning)
+            self._update_tab()
         self._notes_views.currentWidget().set_position(self._audio.position_ms)
         if detect:
             self._notes_status.setText("Carregando notas...")
             self._notes.detect(*source)
 
-    def _show_notes_stem(self, stem: str):
-        """Switch the notes area to ``stem``, empty until its notes load."""
+    def _show_notes_stem(self, stem: str, tuning: tuple[int, ...] | None):
+        """Switch the notes area to ``stem`` in ``tuning``, empty until its notes load."""
         self._notes_stem = stem
         self._notes_stem_buttons[stem].setChecked(True)
         self._detected_notes = []
         self._position_fixes = []
         self._note_roll.clear_notes()
-        tuning = self.TAB_TUNINGS[stem]
-        if tuning is not None:
-            self._tab.set_tuning(tuning)
+        self._show_tuning(tuning)
         self._tab.clear_notes()
         tab_button = self._notes_view_buttons["tab"]
         tab_button.setEnabled(tuning is not None)
@@ -1033,8 +1082,64 @@ class PlayerScreen(QWidget):
         )
         self._set_notes_view(self._notes_view, save=False)
 
-    def _tab_tuning(self) -> tuple[int, ...] | None:
-        return self.TAB_TUNINGS.get(self._notes_stem)
+    def _song_tuning(self, stem: str) -> tuple[int, ...] | None:
+        """The song's tuning for the tab of ``stem``, None for the piano.
+
+        A song without one takes the tuning chosen last for the instrument
+        and keeps it, so choosing a tuning later does not change songs
+        already shown.
+        """
+        instrument = self.TAB_INSTRUMENTS[stem]
+        if instrument is None:
+            return None
+        tuning = self._storage.get_tuning(self._song.id, instrument)
+        if tuning is None:
+            last = load_setting(f"tuning_{instrument}")
+            tuning = tuple(last) if last else tunings.default(instrument)
+            self._storage.set_tuning(self._song.id, instrument, tuning)
+        return tuning
+
+    def _show_tuning(self, tuning: tuple[int, ...] | None):
+        """Draw the tab's strings for ``tuning`` and show it in the pickers."""
+        self._notes_tuning = tuning
+        self._strings_combo.setVisible(tuning is not None)
+        self._tuning_combo.setVisible(tuning is not None)
+        if tuning is None:
+            return
+        self._tab.set_tuning(tuning)
+        instrument = self.TAB_INSTRUMENTS[self._notes_stem]
+        presets = tunings.TUNINGS[instrument]
+        self._strings_combo.clear()
+        for count in sorted({*presets, len(tuning)}):
+            self._strings_combo.addItem(f"{count} cordas", count)
+        self._strings_combo.setCurrentIndex(self._strings_combo.findData(len(tuning)))
+        self._tuning_choices = [t.strings for t in presets.get(len(tuning), [])]
+        if tuning not in self._tuning_choices:
+            self._tuning_choices.append(tuning)
+        self._tuning_combo.clear()
+        for choice in self._tuning_choices:
+            self._tuning_combo.addItem(tunings.name(instrument, choice))
+        self._tuning_combo.setCurrentIndex(self._tuning_choices.index(tuning))
+
+    def _on_strings_chosen(self, index: int):
+        count = self._strings_combo.itemData(index)
+        if count == len(self._notes_tuning):
+            return  # keeps an alternate tuning of the same string count
+        presets = tunings.TUNINGS[self.TAB_INSTRUMENTS[self._notes_stem]].get(count)
+        if presets:
+            self._choose_tuning(presets[0].strings)
+
+    def _on_tuning_chosen(self, index: int):
+        self._choose_tuning(self._tuning_choices[index])
+
+    def _choose_tuning(self, tuning: tuple[int, ...]):
+        """Use ``tuning`` for this song, and for songs shown from now on."""
+        if not self._song or tuning == self._notes_tuning:
+            return
+        instrument = self.TAB_INSTRUMENTS[self._notes_stem]
+        self._storage.set_tuning(self._song.id, instrument, tuning)
+        save_setting(f"tuning_{instrument}", list(tuning))
+        self._refresh_notes_ui()
 
     def _set_notes_stem(self, stem: str):
         self._preferred_notes_stem = stem
@@ -1058,7 +1163,7 @@ class PlayerScreen(QWidget):
         self._refresh_notes_ui()
 
     def _toggle_notes_view(self):
-        if not self._notes_area.isHidden() and self._tab_tuning() is not None:
+        if not self._notes_area.isHidden() and self._notes_tuning is not None:
             current = self._notes_views.currentWidget()
             self._set_notes_view("roll" if current is self._tab else "tab")
 
@@ -1069,7 +1174,7 @@ class PlayerScreen(QWidget):
         self._notes_view = view
         if save:
             save_setting("notes_view", view)
-        if self._tab_tuning() is None:
+        if self._notes_tuning is None:
             view = "roll"
         widget = self._tab if view == "tab" else self._note_roll
         previous = self._notes_views.currentWidget()
@@ -1097,7 +1202,7 @@ class PlayerScreen(QWidget):
 
     def _update_tab(self):
         self._tab_timer.stop()
-        tuning = self._tab_tuning()
+        tuning = self._notes_tuning
         if tuning is not None:
             self._tab.set_notes(
                 fretting.assign_positions(self._visible_notes(), self._position_fixes, tuning),
@@ -1110,7 +1215,7 @@ class PlayerScreen(QWidget):
             return
         count = self._note_roll.visible_note_count
         parts = [f"{count} nota{'s' if count != 1 else ''}"]
-        tuning = self._tab_tuning()
+        tuning = self._notes_tuning
         if self._notes_views.currentWidget() is self._tab:
             out_of_range = sum(n.string is None for n in self._tab.notes)
             if out_of_range:
@@ -1167,20 +1272,20 @@ class PlayerScreen(QWidget):
         self._storage.set_position_fixes(self._song.id, self._notes_stem, fixes)
         self._update_tab()
 
-    def _on_notes_progress(self, song_id: str, stem: str, msg: str):
-        if (song_id, stem) == self._notes_source:
+    def _on_notes_progress(self, song_id: str, stem: str, tuning, msg: str):
+        if (song_id, stem, tuning) == self._notes_source:
             self._notes_status.setText(msg)
 
-    def _on_notes_finished(self, song_id: str, stem: str, notes: list):
-        if (song_id, stem) != self._notes_source:
-            return  # for a song or stem no longer shown; it stays cached
+    def _on_notes_finished(self, song_id: str, stem: str, tuning, notes: list):
+        if (song_id, stem, tuning) != self._notes_source:
+            return  # for a song, stem or tuning no longer shown
         self._detected_notes = notes
         self._position_fixes = self._storage.get_position_fixes(song_id, stem)
         self._note_roll.set_notes(notes)
         self._update_tab()
 
-    def _on_notes_error(self, song_id: str, stem: str, msg: str):
-        if (song_id, stem) == self._notes_source:
+    def _on_notes_error(self, song_id: str, stem: str, tuning, msg: str):
+        if (song_id, stem, tuning) == self._notes_source:
             self._notes_status.setText(f"Erro: {msg[:60]}")
 
     def _update_notes_view_styles(self):

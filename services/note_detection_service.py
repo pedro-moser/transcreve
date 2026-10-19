@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from app_paths import analysis_dir
 from services import basic_pitch as bp
+from services import tunings
 from services.separation_service import CACHE_DIR as STEMS_CACHE_DIR
 
 CACHE_DIR = analysis_dir()
@@ -33,18 +34,16 @@ EXTRACTION = {
     "frame_threshold": 0.3,
     "min_frames": 5,
     "neighbor_suppression": False,
-    "min_pitch": 40,  # E2, the low string in standard tuning
-    "max_pitch": 88,  # E6
 }
-# Stems whose notes can be detected, and the MIDI range decoded from each.
-# EXTRACTION holds the guitar's; Basic Pitch covers A0 (21) to C8 (108).
-PITCH_RANGES = {
-    "guitar": (EXTRACTION["min_pitch"], EXTRACTION["max_pitch"]),
-    "bass": (28, 67),  # E1–G4: four strings, 24 frets
-    "piano": (21, 108),
-    "other": (21, 108),
-}
-NOTE_STEMS = tuple(PITCH_RANGES)
+# Stems whose notes can be detected. Guitar and bass are decoded over their
+# tab tuning, from the low open string to TUNED_FRETS above the high one:
+# E2–E6 in standard tuning, E1–G4 on a four-string bass. Below the low string
+# there is only bleed from other instruments. Piano and other cover the
+# model's whole range, A0 (21) to C8 (108).
+NOTE_STEMS = ("guitar", "bass", "piano", "other")
+TUNED_STEMS = ("guitar", "bass")
+TUNED_FRETS = 24
+PITCH_RANGES = {"piano": (21, 108), "other": (21, 108)}
 # Recordings further than this from A440 are retuned before the model, so
 # their notes do not fall between semitones.
 TUNING_GATE_CENTS = 15.0
@@ -65,9 +64,17 @@ def is_available() -> bool:
     )
 
 
-def extraction(stem: str) -> dict:
+def pitch_range(stem: str, tuning: tuple[int, ...] | None = None) -> tuple[int, int]:
+    """MIDI range decoded from ``stem``; ``tuning`` is the tab's, for TUNED_STEMS."""
+    if stem not in TUNED_STEMS:
+        return PITCH_RANGES[stem]
+    tuning = tuning or tunings.default(stem)
+    return min(tuning), max(tuning) + TUNED_FRETS
+
+
+def extraction(stem: str, tuning: tuple[int, ...] | None = None) -> dict:
     """Decoding parameters for ``stem``: EXTRACTION over the stem's range."""
-    low, high = PITCH_RANGES[stem]
+    low, high = pitch_range(stem, tuning)
     return {**EXTRACTION, "min_pitch": low, "max_pitch": high}
 
 
@@ -92,7 +99,8 @@ def note_stems(song_id: str) -> list[str]:
 
 
 def detect_notes(
-    audio: np.ndarray, sr: int, session=None, stem: str = "guitar"
+    audio: np.ndarray, sr: int, session=None, stem: str = "guitar",
+    tuning: tuple[int, ...] | None = None,
 ) -> tuple[list[DetectedNote], float]:
     """Notes in ``audio`` (mono or (frames, channels)) and its tuning in cents."""
     import librosa
@@ -106,18 +114,18 @@ def detect_notes(
     act = bp.infer(mono, bp.SAMPLE_RATE / ratio, session)
     notes = [
         DetectedNote(n.onset / ratio, n.offset / ratio, n.pitch, n.score)
-        for n in bp.extract_notes(act, **extraction(stem))
+        for n in bp.extract_notes(act, **extraction(stem, tuning))
     ]
     return notes, cents
 
 
-def cache_key(song_id: str, stem: str) -> dict:
+def cache_key(song_id: str, stem: str, tuning: tuple[int, ...] | None = None) -> dict:
     stat = stem_path(song_id, stem).stat()
     return {
         "version": CACHE_VERSION,
         "stem": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
         "model_sha256": bp.MODEL_SHA256,
-        "extraction": extraction(stem),
+        "extraction": extraction(stem, tuning),
         "tuning_gate_cents": TUNING_GATE_CENTS,
     }
 
@@ -161,60 +169,66 @@ def save_cached_notes(
     os.replace(staging, path)
 
 
+# The signals carry the tuning the notes were decoded for, None for stems
+# outside TUNED_STEMS, so a run for a tuning no longer shown can be dropped.
 class _DetectWorker(QObject):
-    progress = Signal(str, str, str)  # song_id, stem, message
-    finished = Signal(str, str, object)  # song_id, stem, list[DetectedNote]
-    error = Signal(str, str, str)  # song_id, stem, message
+    progress = Signal(str, str, object, str)  # song_id, stem, tuning, message
+    finished = Signal(str, str, object, object)  # song_id, stem, tuning, list[DetectedNote]
+    error = Signal(str, str, object, str)  # song_id, stem, tuning, message
 
-    def __init__(self, song_id: str, stem: str):
+    def __init__(self, song_id: str, stem: str, tuning: tuple[int, ...] | None = None):
         super().__init__()
         self._song_id = song_id
         self._stem = stem
+        self._tuning = tuning
 
     def run(self):
-        song_id, stem = self._song_id, self._stem
+        song_id, stem, tuning = self._song_id, self._stem, self._tuning
         try:
-            key = cache_key(song_id, stem)
+            key = cache_key(song_id, stem, tuning)
             notes = load_cached_notes(song_id, stem, key)
             if notes is None:
-                self.progress.emit(song_id, stem, "Detectando notas...")
+                self.progress.emit(song_id, stem, tuning, "Detectando notas...")
                 sr = stem_sample_rate(song_id)
                 if sr is None:
                     raise ValueError("O cache de stems não informa a taxa de amostragem")
                 audio = np.load(stem_path(song_id, stem), mmap_mode="r")
-                notes, cents = detect_notes(audio, sr, bp.load_session(), stem)
+                notes, cents = detect_notes(audio, sr, bp.load_session(), stem, tuning)
                 save_cached_notes(song_id, stem, key, cents, notes)
-            self.finished.emit(song_id, stem, notes)
+            self.finished.emit(song_id, stem, tuning, notes)
         except Exception as e:
-            self.error.emit(song_id, stem, str(e))
+            self.error.emit(song_id, stem, tuning, str(e))
 
 
 class NoteDetectionService(QObject):
-    progress = Signal(str, str, str)  # song_id, stem, message
-    finished = Signal(str, str, object)  # song_id, stem, list[DetectedNote]
-    error = Signal(str, str, str)  # song_id, stem, message
+    progress = Signal(str, str, object, str)  # song_id, stem, tuning, message
+    finished = Signal(str, str, object, object)  # song_id, stem, tuning, list[DetectedNote]
+    error = Signal(str, str, object, str)  # song_id, stem, tuning, message
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread: QThread | None = None
         self._worker: _DetectWorker | None = None
-        # (song_id, stem) requested while another was being detected; the
-        # latest wins.
-        self._pending: tuple[str, str] | None = None
+        # (song_id, stem, tuning) requested while another was being
+        # detected; the latest wins.
+        self._pending: tuple | None = None
 
     @property
     def is_processing(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
-    def detect(self, song_id: str, stem: str):
-        """Load the cached notes for ``stem`` of ``song_id``, or detect them."""
+    def detect(self, song_id: str, stem: str, tuning: tuple[int, ...] | None = None):
+        """Load the cached notes for ``stem`` of ``song_id``, or detect them.
+
+        ``tuning`` sets the range decoded from TUNED_STEMS; None is standard.
+        """
         if self.is_processing:
-            # Even for the running song and stem: its stems may have changed
-            # since the run started, and a second run is a cache hit if not.
-            self._pending = (song_id, stem)
+            # Even for the running request: its stems may have changed since
+            # the run started, and a second run is a cache hit if not.
+            self._pending = (song_id, stem, tuning)
             return
         self._thread = QThread()
-        self._worker = _DetectWorker(song_id, stem)
+        self._worker = _DetectWorker(song_id, stem, tuning)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress.emit)
@@ -222,14 +236,14 @@ class NoteDetectionService(QObject):
         self._worker.error.connect(self._on_error)
         self._thread.start()
 
-    def _on_finished(self, song_id: str, stem: str, notes: list):
+    def _on_finished(self, song_id: str, stem: str, tuning, notes: list):
         self._cleanup()
-        self.finished.emit(song_id, stem, notes)
+        self.finished.emit(song_id, stem, tuning, notes)
         self._start_pending()
 
-    def _on_error(self, song_id: str, stem: str, msg: str):
+    def _on_error(self, song_id: str, stem: str, tuning, msg: str):
         self._cleanup()
-        self.error.emit(song_id, stem, msg)
+        self.error.emit(song_id, stem, tuning, msg)
         self._start_pending()
 
     def _start_pending(self):
